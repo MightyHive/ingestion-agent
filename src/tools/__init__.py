@@ -1,0 +1,4 @@
+"""
+Add: modules of pure functions (no framework) that agents register with @agent.tool.
+Example: tools/my_domain_tools.py with functions returning dicts via dump_tool_output(MyToolOutput(...)).
+"""

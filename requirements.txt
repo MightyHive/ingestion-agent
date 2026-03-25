@@ -1,0 +1,17 @@
+# Python 3.10+ recommended (typing, LangGraph).
+#
+# Core app (main.py, models, observability)
+langgraph>=0.2.0
+pydantic>=2.7
+python-dotenv>=1.0.0
+
+# scripts/list_models.py
+google-generativeai>=0.8.0
+
+# scripts/ingest_docs.py (RAG / Chroma)
+langchain-core>=0.3.0
+langchain-community>=0.3.0
+langchain-text-splitters>=0.3.0
+langchain-google-genai>=2.0.0
+langchain-chroma>=0.1.0
+chromadb>=0.5.0
