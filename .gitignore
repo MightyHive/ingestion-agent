@@ -1,0 +1,40 @@
+# ==========================================
+# 🔒 Entorno y Secretos (¡CRÍTICO!)
+# ==========================================
+.env
+.env.*
+*.key
+*.pem
+# Ignorar JSONs en la raíz por si descargas las Service Accounts de GCP
+*.json 
+
+# ==========================================
+# 🐍 Python & Entorno Virtual
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+
+# ==========================================
+# 📂 Archivos Específicos de tu Plataforma
+# ==========================================
+# Ignorar los logs de observabilidad que generamos con -obs
+traces/
+*.log
+
+# Ignorar la base de datos vectorial local (de tu script ingest_docs.py)
+chroma_db/
+
+# ==========================================
+# 💻 IDEs y Sistema Operativo
+# ==========================================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
