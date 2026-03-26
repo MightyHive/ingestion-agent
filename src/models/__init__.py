@@ -5,6 +5,8 @@ from .lol import (
     CoordinatorLOL,
     SynthesizerPayload,
     SynthesizerLOL,
+    DataArchitectPayload,
+    DataArchitectLOL,
     AGENT_NAMES,
 )
 
