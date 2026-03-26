@@ -11,8 +11,8 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 
-# Add agent name literals here — use Literal["id1", "id2", ...] instead of str once agents exist.
-AGENT_NAMES = str
+# Extend with coordinator / synthesizer / other specialists as they are added.
+AGENT_NAMES = Literal["data_architect"]
 
 
 # ============================================================
@@ -96,4 +96,43 @@ class SynthesizerLOL(BaseLOL):
     )
     payload: SynthesizerPayload = Field(
         description="Synthesis result: final answer and optional generated file path"
+    )
+
+
+# ============================================================
+# DATA ARCHITECT — BigQuery Raw/Bronze modeling and DDL
+# ============================================================
+
+class DataArchitectPayload(BaseModel):
+    proposed_ddl: Optional[str] = Field(
+        default=None,
+        description=(
+            "Full CREATE TABLE / CREATE SCHEMA DDL proposed for the Raw/Bronze layer, "
+            "using BigQuery SQL. Omit or null if the turn only listed datasets or validated inputs without drafting DDL."
+        ),
+    )
+    dataset_target: str = Field(
+        description=(
+            "Target BigQuery dataset for raw ingestion (e.g. raw_social, raw_youtube). "
+            "Must align with Medallion naming: raw/bronze landing zone, not curated silver/gold."
+        ),
+    )
+    action_taken: str = Field(
+        description=(
+            "Short machine-readable label for what this agent did in this turn, e.g. "
+            "'listed_raw_datasets', 'proposed_schema', 'executed_ddl', 'rejected_unsafe_ddl', 'clarification_needed'."
+        ),
+    )
+
+
+class DataArchitectLOL(BaseLOL):
+    id: Literal["data_architect"] = Field(
+        default="data_architect",
+        description="Fixed identifier for the Data Architect (data modeler) agent",
+    )
+    payload: DataArchitectPayload = Field(
+        description=(
+            "Structured outcome: which dataset was targeted, what action was taken, "
+            "and optional DDL text for the event bus / synthesizer."
+        ),
     )
