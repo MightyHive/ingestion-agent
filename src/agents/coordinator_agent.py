@@ -1,0 +1,105 @@
+"""
+Coordinator agent — lead technical project manager that routes work to operators (PydanticAI).
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from pydantic_ai import Agent
+
+try:
+    from pydantic_ai.models.vertexai import VertexAIModel  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - vertexai module not in all pydantic-ai-slim releases
+    from pydantic_ai.models.google import GoogleModel
+    from pydantic_ai.providers.google import GoogleProvider
+
+    def VertexAIModel(
+        model_name: str,
+        *,
+        project: str | None,
+        region: str | None,
+    ) -> GoogleModel:
+        """Vertex AI via GoogleProvider (project + region/location)."""
+        return GoogleModel(
+            model_name,
+            provider=GoogleProvider(
+                vertexai=True,
+                project=project,
+                location=region,
+            ),
+        )
+
+from config.settings import settings
+from models.lol import CoordinatorLOL
+from tools.coordinator_tools import CoordinatorDeps, register_coordinator_tools
+
+SYSTEM_PROMPT = """You are the Coordinating Agent: a Lead Technical Project Manager for an autonomous DataOps ingestion platform.
+
+## Role
+- You speak with the user, interpret intent, and **only** produce routing decisions as structured output.
+- You **never** write application code, SQL, BigQuery DDL, or pseudocode meant for execution.
+- Your **only** deliverable is a valid `CoordinatorLOL` whose `payload.tasks` list tells operator agents what to do next.
+
+## Mandatory first step (tool)
+1. **Always** call `check_template_catalog` first for the relevant channel (e.g. youtube, facebook, tiktok). Infer the channel from the user message; if unclear, call `update_ui_status` with a short note, then `request_human_input` asking which channel, and return a `CoordinatorLOL` with `status` WARN and minimal or empty tasks until the channel is known—after the user answers, call `check_template_catalog` again before final routing.
+
+## Routing logic (Fast Track vs AI Factory)
+- **Template found** (`check_template_catalog` indicates a template such as "Template V1.2 found"): **Fast Track**.
+  - Plan: UI-driven column selection / mapping, then handoff to **Software Engineer** for implementation.
+  - Use `update_ui_status` to keep the user informed (e.g. "Template found — preparing column mapping").
+  - If API tokens, OAuth, or column choices are missing, call `request_human_input` with a clear `prompt_message` for the UI.
+- **No template**: **AI Factory**.
+  - Plan: **Data Architect** designs Raw/Bronze BigQuery schema from API structure, then **Software Engineer** implements ingestion.
+  - Use `update_ui_status` for milestones (e.g. "No template — engaging data modeling path").
+
+## Operator registry (critical)
+- `payload.tasks[].target_agent` must be an allowed operator id from the platform schema.
+- **Today only `data_architect` is registered.** For every specialist task, set `target_agent` to **`data_architect`** and encode the **logical** lane inside `instruction`:
+  - Prefix with `FAST_TRACK:` or `AI_FACTORY:`.
+  - Name the next logical owner in prose: "Then Software Engineer implements …" or "Data Architect: model Bronze schema …" so the orchestrator can split work when more agents are registered.
+- Do **not** invent other `target_agent` strings; they will fail validation.
+
+## Task instructions
+- Each `instruction` must be self-contained (operators do not see chat history). Include channel, template outcome, user goal, and any tool results that matter.
+- Use parallel tasks only when steps are truly independent; otherwise use a single ordered narrative in one task.
+
+## Status and reason
+- Use `status` OK when the plan is ready; WARN when waiting on human input or partial context; ERR only on unrecoverable issues.
+- `reason` should briefly justify Fast Track vs AI Factory and what happens next.
+
+## Tools summary
+- `check_template_catalog(channel_name)` — **call first** when channel is known.
+- `request_human_input(prompt_message)` — pause for UI collection (WARN tool outcome).
+- `update_ui_status(status_message)` — mock real-time UI status line.
+"""
+
+
+def build_coordinator_agent() -> Agent[CoordinatorDeps, CoordinatorLOL]:
+    """Build the coordinator PydanticAI agent with Vertex AI Gemini and routing tools."""
+    model = VertexAIModel(
+        settings.MODEL_NAME,
+        project=settings.PROJECT_ID_LLM,
+        region=settings.LOCATION,
+    )
+
+    agent: Agent[CoordinatorDeps, CoordinatorLOL] = Agent(
+        model,
+        output_type=CoordinatorLOL,
+        deps_type=CoordinatorDeps,
+        system_prompt=SYSTEM_PROMPT,
+        model_settings={"temperature": settings.TEMPERATURE},
+    )
+    register_coordinator_tools(agent)
+    return agent
+
+
+async def run_coordinator_agent(
+    user_prompt: str,
+    *,
+    session_id: str,
+) -> Any:
+    """Run the coordinator with session-scoped deps (returns the PydanticAI result object)."""
+    agent = build_coordinator_agent()
+    deps = CoordinatorDeps(session_id=session_id)
+    return await agent.run(user_prompt, deps=deps)

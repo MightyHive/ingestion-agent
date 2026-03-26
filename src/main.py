@@ -30,6 +30,11 @@ from typing import Awaitable, Callable
 from langgraph.graph import END, START, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
 
+from agents.coordinator_agent import build_coordinator_agent, CoordinatorDeps
+from agents.data_architect_agent import build_data_architect_agent, DataArchitectDeps
+from agents.synthesizer_agent import build_synthesizer_agent
+from config.settings import settings
+from models.lol import DataArchitectLOL
 from state import AgentGraphState
 from synthesis_enrichment import (
     extract_enrichment_from_events,
@@ -39,6 +44,7 @@ from synthesis_enrichment import (
 from models.tool_outputs import to_json_safe
 from observability import (
     empty_usage,
+    extract_usage,
     is_observability_enabled,
     log_agent_end,
     log_agent_start,
@@ -55,7 +61,7 @@ MAX_CONTEXT_EXCHANGES = 5
 
 # Add: each id must match the graph node name and TaskStep.target_agent.
 SPECIAL_AGENT_NAMES = ["out_of_scope", "capabilities_help"]
-NORMAL_AGENT_NAMES: list[str] = []
+NORMAL_AGENT_NAMES: list[str] = ["data_architect"]
 ALL_AGENT_NAMES = SPECIAL_AGENT_NAMES + NORMAL_AGENT_NAMES
 
 # Valid coordinator router destinations (barrier and shortcuts).
@@ -375,10 +381,7 @@ def prepare_new_turn(state: AgentGraphState) -> dict:
 
 
 async def coordinator_node(state: AgentGraphState) -> dict:
-    """
-    Add: import build_coordinator_agent from agents.coordinator_agent and replace this stub with
-    result = await build_coordinator_agent().run(prompt); lol = result.output.model_dump().
-    """
+    """Call the Coordinator PydanticAI agent and build dispatch targets."""
     if is_observability_enabled():
         print()
     else:
@@ -404,14 +407,15 @@ async def coordinator_node(state: AgentGraphState) -> dict:
     else:
         prompt = user_query
 
-    log_console("coordinator", "stub", "built_prompt", chars=len(prompt))
     usage = empty_usage()
-    lol = {
-        "status": "OK",
-        "reason": "",
-        "id": "coordinator",
-        "payload": {"tasks": []},
-    }
+    try:
+        agent = build_coordinator_agent()
+        result = await agent.run(prompt, deps=CoordinatorDeps(session_id="cli_session"))
+        lol = result.output.model_dump()
+        usage = extract_usage(result)
+    except Exception as e:
+        lol = _make_error_lol("coordinator", e, {"tasks": []})
+        usage = empty_usage()
 
     tasks = lol.get("payload", {}).get("tasks", []) if isinstance(lol, dict) else []
     task_plan: dict[str, str] = {}
@@ -447,7 +451,30 @@ async def coordinator_node(state: AgentGraphState) -> dict:
     }
 
 
-# Add: async nodes per specialist (_run_specialist_node + build_*_agent / run_*_agent).
+async def data_architect_node(state: AgentGraphState) -> dict:
+    """Invoke the Data Architect agent and return a LOL event."""
+
+    async def _invoke(prompt: str) -> tuple[dict, dict]:
+        result = await build_data_architect_agent().run(
+            prompt,
+            deps=DataArchitectDeps(project_id=settings.PROJECT_ID_DATA or ""),
+        )
+        lol = result.output.model_dump()
+        return lol, extract_usage(result)
+
+    default_payload = DataArchitectLOL(
+        status="ERR",
+        reason="Data architect failure.",
+        payload={"dataset_target": "", "action_taken": "error"},
+    ).payload.model_dump()
+    return await _run_specialist_node(
+        state,
+        "data_architect",
+        "Data Architect",
+        "   🏗️ [Data Architect working...]",
+        _invoke,
+        default_payload,
+    )
 
 
 def out_of_scope_node(state: AgentGraphState) -> dict:
@@ -495,10 +522,7 @@ def coordinator_failure_node(state: AgentGraphState) -> dict:
 
 
 async def synthesizer_node(state: AgentGraphState) -> dict:
-    """
-    Add: from agents.synthesizer_agent import build_synthesizer_agent and
-    result = await build_synthesizer_agent().run(prompt_final) as before.
-    """
+    """Produce the final Markdown answer via the Synthesizer PydanticAI agent."""
     if not is_observability_enabled():
         print("   ✍️  [Synthesizer drafting final response...]")
     log_agent_start("Synthesizer")
@@ -531,21 +555,30 @@ async def synthesizer_node(state: AgentGraphState) -> dict:
         "Produce the final answer from the event bus and mandatory data above."
     )
 
-    log_console("synthesizer", "stub", "built_prompt", chars=len(prompt_final))
-    final_text = (
-        "(Synthesizer stub) No synthesis model configured. "
-        "Round event bus:\n\n"
-        f"{lean_bus}"
-    )
+    log_console("synthesizer", "prompt", "built_prompt", chars=len(prompt_final))
+    synth_status = "OK"
+    err_reason: str | None = None
+    try:
+        agent = build_synthesizer_agent()
+        result = await agent.run(prompt_final)
+        final_text = result.output.payload.summary
+        usage = extract_usage(result)
+        synth_status = result.output.status
+    except Exception as e:
+        final_text = "Error generating final synthesis: " + str(e)
+        usage = empty_usage()
+        synth_status = "ERR"
+        err_reason = str(e)
+
     final_text = merge_missing_structured_content(final_text, enrichment)
-    usage = empty_usage()
     log_agent_end(
         "Synthesizer",
         time.perf_counter() - started,
-        status="OK",
-        prompt_tokens=0,
-        completion_tokens=0,
-        total_tokens=0,
+        status=synth_status,
+        reason=err_reason,
+        prompt_tokens=usage.get("prompt_tokens", 0),
+        completion_tokens=usage.get("completion_tokens", 0),
+        total_tokens=usage.get("total_tokens", 0),
     )
 
     return {"final_response": final_text, "obs_usages": [usage]}
@@ -590,6 +623,7 @@ builder = StateGraph(AgentGraphState)
 
 builder.add_node("prepare_new_turn", prepare_new_turn)
 builder.add_node("coordinator", coordinator_node)
+builder.add_node("data_architect", data_architect_node)
 builder.add_node("out_of_scope", out_of_scope_node)
 builder.add_node("capabilities_help", capabilities_help_node)
 builder.add_node("coordinator_failure", coordinator_failure_node)
