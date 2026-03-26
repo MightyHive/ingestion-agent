@@ -1,10 +1,10 @@
 # Python 3.10+ recommended (typing, LangGraph).
 #
-# Core app (main.py, models, observability)
+# Core app (main.py, models, observability, PydanticAI agents)
 langgraph>=0.2.0
 pydantic>=2.7
 python-dotenv>=1.0.0
-pydantic-ai-slim[google]>=0.0.22
+pydantic-ai-slim[google,vertexai]>=0.0.22
 
 # scripts/list_models.py
 google-generativeai>=0.8.0

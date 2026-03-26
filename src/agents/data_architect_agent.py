@@ -7,8 +7,28 @@ from __future__ import annotations
 from typing import Any
 
 from pydantic_ai import Agent
-from pydantic_ai.models.google import GoogleModel, GoogleModelSettings
-from pydantic_ai.providers.google import GoogleProvider
+
+try:
+    from pydantic_ai.models.vertexai import VertexAIModel  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - vertexai module not in all pydantic-ai-slim releases
+    from pydantic_ai.models.google import GoogleModel
+    from pydantic_ai.providers.google import GoogleProvider
+
+    def VertexAIModel(
+        model_name: str,
+        *,
+        project: str | None,
+        region: str | None,
+    ) -> GoogleModel:
+        """Vertex AI via GoogleProvider (project + region/location)."""
+        return GoogleModel(
+            model_name,
+            provider=GoogleProvider(
+                vertexai=True,
+                project=project,
+                location=region,
+            ),
+        )
 
 from config.settings import settings
 from models.lol import DataArchitectLOL
@@ -47,21 +67,19 @@ Design BigQuery schemas for the Raw/Bronze layer from API response shapes, propo
 
 
 def build_data_architect_agent() -> Agent[DataArchitectDeps, DataArchitectLOL]:
-    """Build a configured PydanticAI agent with Google Gemini and architect tools."""
-    provider = (
-        GoogleProvider(api_key=settings.GOOGLE_API_KEY)
-        if settings.GOOGLE_API_KEY
-        else GoogleProvider()
+    """Build a configured PydanticAI agent with Vertex AI Gemini and architect tools."""
+    model = VertexAIModel(
+        settings.MODEL_NAME,
+        project=settings.PROJECT_ID_LLM,
+        region=settings.LOCATION,
     )
-    model = GoogleModel(settings.MODEL_NAME, provider=provider)
-    model_settings = GoogleModelSettings(temperature=settings.TEMPERATURE)
 
     agent: Agent[DataArchitectDeps, DataArchitectLOL] = Agent(
         model,
         output_type=DataArchitectLOL,
         deps_type=DataArchitectDeps,
         system_prompt=SYSTEM_PROMPT,
-        model_settings=model_settings,
+        model_settings={"temperature": settings.TEMPERATURE},
     )
     register_architect_tools(agent)
     return agent
