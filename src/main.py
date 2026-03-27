@@ -696,6 +696,7 @@ builder.add_edge("out_of_scope", END)
 builder.add_edge("capabilities_help", END)
 
 memory = MemorySaver()
+# Exposed for FastAPI (`api.py`). Safe to import: the CLI runs only under `if __name__ == "__main__"`.
 compiled_graph = builder.compile(checkpointer=memory)
 
 
