@@ -1,6 +1,8 @@
 # Python 3.10+ recommended (typing, LangGraph).
 #
 # Core app (main.py, models, observability, PydanticAI agents)
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
 langgraph>=0.2.0
 pydantic>=2.7
 python-dotenv>=1.0.0
