@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import RunContext
 
+from config.settings import settings
 from models.tool_outputs import ToolOutput, dump_tool_output
 
 if TYPE_CHECKING:
@@ -69,34 +70,18 @@ def _check_template_catalog(channel_name: str, session_id: str = "") -> ToolOutp
     )
 
 def _request_human_input(prompt_message: str, session_id: str = "") -> ToolOutput:
-    """Simulate pausing the flow until the UI collects user input via terminal."""
-    # EL INPUT DETIENE LA CONSOLA Y TE DEJA ESCRIBIR A TI
-    print(f"\n⏸️  [SISTEMA PAUSADO - ESPERANDO AL HUMANO]")
-    respuesta = input(f"👤 {prompt_message}\n> ")
-    
-    return ToolOutput(
-        status="WARN", # WARN porque el flujo se interrumpió
-        msg=f"El usuario respondió: {respuesta}"
-    )
+    """Pause for human input: blocking terminal in CLI, structured payload in API mode."""
+    if settings.RUN_MODE == "cli":
+        print("\n⏸️  [PAUSED — waiting for human input]")
+        reply = input(f"👤 {prompt_message}\n> ")
+        return ToolOutput(
+            status="WARN",
+            code="HUMAN_INPUT_REQUIRED",
+            msg=f"User replied: {reply}",
+        )
 
-
-def _update_ui_status(status_message: str, session_id: str = "") -> ToolOutput:
-    """Simulate pushing a real-time loading/status line to the frontend via terminal."""
-    # ESTE PRINT ES PARA QUE TÚ LO VEAS EN LA CONSOLA MIENTRAS PRUEBAS
-    print(f"\n🖥️  [UI MOCK - Cargando...]: {status_message}") 
-    
-    return ToolOutput(status="OK", msg="UI updated successfully")
-
-'''
-def _request_human_input(prompt_message: str, session_id: str = "") -> ToolOutput:
-    """Simulate pausing the flow until the UI collects user input."""
     text = (prompt_message or "").strip() or "Additional input required."
-    body = {
-        "session_id": session_id,
-        "paused": True,
-        "ui_prompt": text,
-        "session_note": "Coordinator requested human input via UI (mock).",
-    }
+    body = {"session_id": session_id, "paused": True, "ui_prompt": text}
     return ToolOutput(
         status="WARN",
         code="HUMAN_INPUT_REQUIRED",
@@ -105,20 +90,17 @@ def _request_human_input(prompt_message: str, session_id: str = "") -> ToolOutpu
 
 
 def _update_ui_status(status_message: str, session_id: str = "") -> ToolOutput:
-    """Simulate pushing a real-time loading/status line to the frontend."""
-    text = (status_message or "").strip() or "Working…"
-    body = {
-        "session_id": session_id,
-        "ui_status": text,
-        "delivered": True,
-        "mock": True,
-    }
+    """Emit a status line: console mock in CLI; JSON payload for API clients in all modes."""
+    if settings.RUN_MODE == "cli":
+        print(f"\n🖥️  [UI status]: {status_message}")
+
+    body = {"session_id": session_id, "ui_status": status_message, "delivered": True}
     return ToolOutput(
         status="OK",
         code="UI_STATUS_UPDATED",
         msg=json.dumps(body),
     )
-'''
+
 
 # ---------------------------------------------------------------------------
 # PydanticAI registration
