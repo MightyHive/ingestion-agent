@@ -1,30 +1,20 @@
 """
-Agent platform — LangGraph orchestrator with LOL Protocol.
+Software Engineer component runtime (PoC mode).
 
-Flow:
-  START -> prepare_new_turn -> Coordinator (PydanticAI)
-        -> parallel fan-out to specialist agents
-        -> sync_barrier -> synthesizer -> END
-
-Special nodes:
-  Coordinator ERR -> coordinator_failure -> END
-  out_of_scope / capabilities_help -> END directly
-
-Memory: MemorySaver checkpointer persists state across turns.
-        conversation_context holds a lean summary of prior exchanges.
-
-Trace: Each turn writes a .md file under traces/ with the full flow.
-
-Add: PydanticAI agents under `agents/`; register nodes + parallel edges to sync_barrier.
+This entrypoint runs the Software Engineer agent directly (no coordinator/synthesizer).
+The LOL dict is the contract for downstream agents; the CLI prints ``payload.summary`` for convenience.
 """
 
+from __future__ import annotations
+
+import asyncio
 import json
 import os
 import sys
 import time
-import asyncio
 from datetime import datetime
 
+<<<<<<< Updated upstream
 from typing import Awaitable, Callable
 
 from langgraph.graph import END, START, StateGraph
@@ -41,6 +31,10 @@ from synthesis_enrichment import (
     format_mandatory_data_block,
     merge_missing_structured_content,
 )
+=======
+from agents.software_engineer_agent import SoftwareEngineerDeps, run_software_engineer_agent
+from config.settings import settings
+>>>>>>> Stashed changes
 from models.tool_outputs import to_json_safe
 from observability import (
     empty_usage,
@@ -48,7 +42,6 @@ from observability import (
     is_observability_enabled,
     log_agent_end,
     log_agent_start,
-    log_console,
     log_retry_end,
     log_retry_start,
     log_turn_summary,
@@ -59,25 +52,15 @@ from observability import (
 MAX_RETRIES = 2
 MAX_CONTEXT_EXCHANGES = 5
 
+<<<<<<< Updated upstream
 # Add: each id must match the graph node name and TaskStep.target_agent.
 SPECIAL_AGENT_NAMES = ["out_of_scope", "capabilities_help"]
 NORMAL_AGENT_NAMES: list[str] = ["data_architect"]
 ALL_AGENT_NAMES = SPECIAL_AGENT_NAMES + NORMAL_AGENT_NAMES
+=======
+>>>>>>> Stashed changes
 
-# Valid coordinator router destinations (barrier and shortcuts).
-COORDINATOR_ROUTE_DESTINATIONS = ALL_AGENT_NAMES + [
-    "sync_barrier",
-    "coordinator_failure",
-    "synthesizer",
-]
-
-
-# ============================================================
-# Utilities
-# ============================================================
-
-def _write_trace_log(user_query: str, trace_entries: list, conversation_context: list) -> str:
-    """Write a .md file with the full turn trace."""
+def _write_trace_log(user_query: str, lol: dict, elapsed_s: float, usage: dict, conversation_context: list) -> str:
     traces_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "traces")
     os.makedirs(traces_dir, exist_ok=True)
 
@@ -86,7 +69,7 @@ def _write_trace_log(user_query: str, trace_entries: list, conversation_context:
     filepath = os.path.join(traces_dir, filename)
 
     lines = [
-        f"# Trace — {ts.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"# Software Engineer Trace — {ts.strftime('%Y-%m-%d %H:%M:%S')}",
         "",
         "## Query",
         "",
@@ -99,91 +82,33 @@ def _write_trace_log(user_query: str, trace_entries: list, conversation_context:
         lines.append("")
         for entry in conversation_context:
             role = "User" if entry.get("role") == "user" else "Assistant"
-            content = entry.get("content", "")
-            lines.append(f"**{role}:** {content}")
+            lines.append(f"**{role}:** {entry.get('content', '')}")
             lines.append("")
 
-    lines.append("## Execution flow")
-    lines.append("")
-
-    for i, entry in enumerate(trace_entries, 1):
-        node = entry["node"]
-        timestamp = entry["timestamp"]
-        output = entry.get("output", {})
-
-        lines.append(f"### {i}. `{node}` ({timestamp})")
-        lines.append("")
-
-        if node == "prepare_new_turn":
-            ctx_count = len(output.get("conversation_context", []))
-            lines.append(f"- **Context entries:** {ctx_count}")
-            lines.append("- Turn execution state reset")
-
-        elif node == "coordinator":
-            cr = output.get("coordinator_result", {})
-            lines.append(f"- **Status:** `{cr.get('status', '?')}`")
-            lines.append(f"- **Reasoning:** {cr.get('reason', 'N/A')}")
-            plan = output.get("task_plan", {})
-            if plan:
-                targets = output.get("dispatch_targets", [])
-                lines.append(f"- **Parallel dispatch ({len(targets)} agents):**")
-                for agent_name in targets:
-                    lines.append(f"  - `{agent_name}`: {plan.get(agent_name, '(no instruction)')}")
-            else:
-                lines.append("- **Plan:** (empty)")
-
-        elif node == "sync_barrier":
-            lines.append(f"- **Round events:** {output.get('round_event_count', '?')}")
-            lines.append("- **Lean event bus ready for synthesizer**")
-
-        elif node == "synthesizer":
-            resp = output.get("final_response", "")
-            lines.append("- **Final response:**")
-            lines.append("")
-            lines.append("```")
-            lines.append(resp[:2000] if resp else "(empty)")
-            lines.append("```")
-
-        else:
-            results = output.get("event_bus", [])
-            result = results[-1] if results else {}
-            lines.append(f"- **Agent ID:** `{result.get('id', node)}`")
-            lines.append(f"- **Status:** `{result.get('status', '?')}`")
-            lines.append(f"- **Reasoning:** {result.get('reason', 'N/A')[:300]}")
-            payload = result.get("payload", {})
-            lines.append("- **Payload:**")
-            lines.append("")
-            lines.append("```json")
-            try:
-                lines.append(json.dumps(to_json_safe(payload), indent=2, ensure_ascii=False))
-            except Exception:
-                lines.append(str(payload))
-            lines.append("```")
-
-        lines.append("")
+    lines.extend(
+        [
+            "## Result (LOL)",
+            "",
+            "```json",
+            json.dumps(to_json_safe(lol), ensure_ascii=False, indent=2),
+            "```",
+            "",
+            "## Telemetry",
+            "",
+            f"- Elapsed: `{elapsed_s:.2f}s`",
+            f"- Prompt tokens: `{usage.get('prompt_tokens', 0)}`",
+            f"- Completion tokens: `{usage.get('completion_tokens', 0)}`",
+            f"- Total tokens: `{usage.get('total_tokens', 0)}`",
+            "",
+        ]
+    )
 
     with open(filepath, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
     return filepath
 
 
-def _make_error_lol(agent_id: str, error: Exception, payload_defaults: dict) -> dict:
-    """Build a standard error LOL for any agent."""
-    return {
-        "status": "ERR",
-        "reason": f"Exception in {agent_id}: {str(error)}",
-        "id": agent_id,
-        "payload": payload_defaults,
-    }
-
-
 def _sanitize_reason(lol: dict) -> dict:
-    """
-    Trim `reason` tokens on success:
-    - OK  -> drop reasoning (empty string)
-    - WARN -> short reasoning
-    - ERR -> full reasoning
-    """
     if not isinstance(lol, dict):
         return lol
     status = lol.get("status")
@@ -197,120 +122,83 @@ def _sanitize_reason(lol: dict) -> dict:
     return lol
 
 
-def _safe_min_json(data: dict) -> str:
-    """Serialize a dict to minified JSON (one line, no spaces)."""
-    return json.dumps(to_json_safe(data), ensure_ascii=False, separators=(",", ":"))
+def _extract_final_text(lol: dict) -> str:
+    """Prefer ``payload.summary``; otherwise dump the LOL for CLI/debug."""
+    payload = lol.get("payload", {}) if isinstance(lol, dict) else {}
+    summary = payload.get("summary") if isinstance(payload, dict) else None
+    if isinstance(summary, str) and summary.strip():
+        return summary
+    return json.dumps(to_json_safe(lol), ensure_ascii=False, indent=2)
 
 
-def _to_lean_lol_event(lol: dict, include_warn_reason: bool = False) -> dict:
-    """Prune a LOL for low-cost internal transport."""
-    lean = {
-        "id": lol.get("id"),
-        "status": lol.get("status"),
-        "payload": lol.get("payload"),
-    }
-    if lol.get("status") == "ERR":
-        lean["reason"] = lol.get("reason", "")
-    elif include_warn_reason and lol.get("status") == "WARN" and lol.get("reason"):
-        lean["reason"] = lol.get("reason")
-    return lean
-
-
-def get_lean_event_bus(events: list[dict], include_warn_reason: bool = False) -> str:
-    """
-    Convert LOL events to minified JSON Lines.
-    Format: one JSON object per line, no spaces.
-    """
-    lines = []
-    for event in events:
-        lines.append(_safe_min_json(_to_lean_lol_event(event, include_warn_reason=include_warn_reason)))
-    return "\n".join(lines)
-
-
-def _round_events(state: AgentGraphState) -> list[dict]:
-    """Events for the current turn (event_bus resets each turn)."""
-    return state.get("event_bus", [])
-
-
-def _usage_from_lol(lol: dict | None) -> dict:
-    """Read usage attached to LOL, normalized to the standard shape."""
-    if not isinstance(lol, dict):
-        return empty_usage()
-    raw = lol.get("usage")
-    if isinstance(raw, dict):
-        return merge_usage(empty_usage(), raw)
-    return empty_usage()
-
-
-def _attach_usage(lol: dict, usage: dict) -> dict:
-    """Attach usage to LOL for traceability and local debugging."""
-    out = dict(lol or {})
-    out["usage"] = merge_usage(empty_usage(), usage)
-    return out
-
-
-def _build_agent_event_output(lol: dict, usage: dict | None = None) -> dict:
-    """Uniform agent node output for parallel accumulation in event_bus."""
-    normalized_usage = merge_usage(empty_usage(), usage)
-    return {"event_bus": [to_json_safe(lol)], "obs_usages": [normalized_usage]}
-
-
-async def _run_with_retries(
-    agent_id: str,
-    instruction: str,
-    invoke_fn: Callable[[str], Awaitable[tuple[dict, dict]]],
-    payload_defaults: dict,
-    max_retries: int | None = None,
-) -> tuple[dict, dict]:
-    """
-    Retry an agent call when status=ERR.
-    Retries run inside the node so graph parallelism stays valid.
-    """
-    prompt = instruction
-    last_lol = _make_error_lol(agent_id, Exception("No output"), payload_defaults)
-    total_usage = empty_usage()
-
-    retries = MAX_RETRIES if max_retries is None else max(0, max_retries)
+async def _run_with_retries(prompt: str, deps: SoftwareEngineerDeps) -> tuple[dict, dict]:
+    retries = max(0, MAX_RETRIES)
     total_attempts = retries + 1
+    total_usage = empty_usage()
+    last_lol = {
+        "status": "ERR",
+        "reason": "No output",
+        "id": "software_engineer_agent",
+        "payload": {
+            "action": "error",
+            "connector_name": None,
+            "source": None,
+            "file_path": None,
+            "validation": None,
+            "data": None,
+            "generated_files": [],
+            "env_vars_required": [],
+            "required_secrets": [],
+            "api_dependencies": [],
+            "missing_inputs": [],
+            "review_requested": False,
+            "review_reason": None,
+            "review_notes": None,
+            "summary": "The software engineer component could not complete the request.",
+        },
+    }
+    working_prompt = prompt
+
     for attempt in range(1, total_attempts + 1):
-        attempt_started = time.perf_counter()
-        log_retry_start(agent_id, attempt, total_attempts)
-        attempt_usage = empty_usage()
+        log_retry_start("software_engineer_agent", attempt, total_attempts)
+        started = time.perf_counter()
         try:
-            last_lol, attempt_usage = await invoke_fn(prompt)
-        except Exception as e:
-            last_lol = _make_error_lol(agent_id, e, payload_defaults)
-            attempt_usage = empty_usage()
+            lol, usage = await run_software_engineer_agent(working_prompt, deps=deps)
+            total_usage = merge_usage(total_usage, usage)
+            last_lol = _sanitize_reason(to_json_safe(lol))
+            log_retry_end(
+                "software_engineer_agent",
+                attempt,
+                time.perf_counter() - started,
+                status=last_lol.get("status"),
+                reason=last_lol.get("reason"),
+            )
+            if last_lol.get("status") != "ERR":
+                return last_lol, total_usage
+        except Exception as exc:
+            log_retry_end(
+                "software_engineer_agent",
+                attempt,
+                time.perf_counter() - started,
+                status="ERR",
+                reason=str(exc),
+            )
+            last_lol = {
+                "status": "ERR",
+                "reason": f"Exception in software_engineer_agent: {str(exc)}",
+                "id": "software_engineer_agent",
+                "payload": last_lol.get("payload", {}),
+            }
 
-        total_usage = merge_usage(total_usage, attempt_usage)
-        last_lol = to_json_safe(last_lol)
-        existing_usage = _usage_from_lol(last_lol)
-        if attempt_usage.get("total_tokens", 0) > 0 or (
-            attempt_usage.get("prompt_tokens", 0) > 0 or attempt_usage.get("completion_tokens", 0) > 0
-        ):
-            last_lol = _attach_usage(last_lol, attempt_usage)
-        else:
-            last_lol = _attach_usage(last_lol, existing_usage)
-        last_lol = _sanitize_reason(last_lol)
-        log_retry_end(
-            agent_id,
-            attempt,
-            time.perf_counter() - attempt_started,
-            status=last_lol.get("status"),
-            reason=last_lol.get("reason"),
-        )
-        if last_lol.get("status") != "ERR":
-            return last_lol, total_usage
-
-        prompt = (
-            f"{instruction}\n\n"
-            f"PREVIOUS_ERROR: {last_lol.get('reason', '')}\n"
+        working_prompt = (
+            f"{prompt}\n\nPREVIOUS_ERROR: {last_lol.get('reason', '')}\n"
             "Fix the error and try again."
         )
 
     return last_lol, total_usage
 
 
+<<<<<<< Updated upstream
 async def _run_specialist_node(
     state: AgentGraphState,
     agent_id: str,
@@ -656,21 +544,48 @@ compiled_graph = builder.compile(checkpointer=memory)
 # ============================================================
 # CLI
 # ============================================================
+=======
+def _append_library_persistence_rule(prompt: str) -> str:
+    """Reinforce non-optional persistence for this agent (SE CLI entrypoint)."""
+    return (
+        prompt
+        + "\n\n[Library rule] If you author or finalize connector Python (`write_cf_code`, "
+        "`modify_payload_and_columns`, or edited template), you MUST call `validate_connector_code` "
+        "then `save_connector` (new file) or `overwrite_connector` (replace only after user explicitly authorizes). "
+        "`save_connector` never overwrites—on conflict ask the user before `overwrite_connector`. "
+        "If the turn is read-only (list/find/read), persistence does not apply. "
+        "Set payload.file_path from the save tool output when authoring succeeds."
+    )
+
+
+def _build_prompt(user_query: str, conversation_context: list[dict]) -> str:
+    if not conversation_context:
+        return user_query
+    context_lines: list[str] = []
+    for c in conversation_context:
+        role = "User" if c.get("role") == "user" else "Assistant"
+        context_lines.append(f"{role}: {c.get('content', '')}")
+    return (
+        "PRIOR CONVERSATION CONTEXT:\n"
+        + "\n".join(context_lines)
+        + "\n\nNEW USER REQUEST:\n"
+        + user_query
+    )
+
+>>>>>>> Stashed changes
 
 async def _cli_loop() -> None:
     obs_enabled = any(arg in {"-obs", "--obs"} for arg in sys.argv[1:])
     set_observability_enabled(obs_enabled)
 
     print("\n" + "=" * 50)
-    print("🚀 Starting agent platform (LOL Protocol)...")
+    print("🚀 Starting Software Engineer component (PoC)...")
     print("💡 Type 'exit' or 'quit' to leave.")
     if obs_enabled:
         print("🔍 Local observability: ON (-obs)")
     print("=" * 50 + "\n")
 
-    config = {"configurable": {"thread_id": "1"}}
-    is_first_turn = True
-
+    conversation_context: list[dict] = []
     while True:
         print("\n👤 User (paste your text and press Ctrl+D to send):")
         try:
@@ -679,78 +594,44 @@ async def _cli_loop() -> None:
             break
 
         print("\n" + "-" * 40)
-
-        if user_input.lower() in ["exit", "quit"]:
+        if user_input.lower() in {"exit", "quit"}:
             print("👋 Leaving the platform...")
             break
-
-        if not user_input.strip():
+        if not user_input:
             continue
 
-        if is_first_turn:
-            input_state = {
-                "user_query": user_input,
-                "coordinator_result": None,
-                "task_plan": {},
-                "dispatch_targets": [],
-                "event_bus": [],
-                "obs_usages": [],
-                "round_event_count": 0,
-                "final_response": None,
-                "conversation_context": [],
-                "_last_user_query": "",
-            }
-            is_first_turn = False
-        else:
-            input_state = {"user_query": user_input}
+        prompt = _append_library_persistence_rule(_build_prompt(user_input, conversation_context))
+        deps = SoftwareEngineerDeps(
+            project_id=settings.PROJECT_ID_DATA or settings.PROJECT_ID_LLM or "",
+            location=settings.LOCATION,
+        )
 
-        trace_entries = []
-        turn_context = []
-        turn_started = time.perf_counter()
-        turn_usage = empty_usage()
-        turn_error: Exception | None = None
+        log_agent_start("Software Engineer", instruction=prompt)
+        started = time.perf_counter()
+        lol, usage = await _run_with_retries(prompt, deps)
+        elapsed = time.perf_counter() - started
+        log_agent_end(
+            "Software Engineer",
+            elapsed,
+            status=lol.get("status"),
+            reason=lol.get("reason"),
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+            total_tokens=usage.get("total_tokens", 0),
+        )
 
-        try:
-            async for event in compiled_graph.astream(input_state, config, stream_mode="updates"):
-                for node_name, values in event.items():
-                    trace_entries.append({
-                        "node": node_name,
-                        "timestamp": datetime.now().strftime("%H:%M:%S"),
-                        "output": values,
-                    })
+        answer = _extract_final_text(lol)
+        print(f"\n🤖 ASSISTANT:\n{answer}\n")
+        print("-" * 60)
 
-                    if node_name == "prepare_new_turn":
-                        turn_context = values.get("conversation_context", [])
+        _write_trace_log(user_input, lol, elapsed, usage, conversation_context)
+        if obs_enabled:
+            log_turn_summary(elapsed_s=elapsed, usage=usage, turns_events=1)
 
-                    if isinstance(values, dict):
-                        if "obs_usages" in values and isinstance(values["obs_usages"], list):
-                            for usage_item in values["obs_usages"]:
-                                turn_usage = merge_usage(turn_usage, usage_item)
-                        elif "obs_usage" in values:
-                            turn_usage = merge_usage(turn_usage, values.get("obs_usage"))
-
-                    if node_name in [
-                        "synthesizer",
-                        "out_of_scope",
-                        "capabilities_help",
-                        "coordinator_failure",
-                    ] and values.get("final_response"):
-                        print(f"\n🤖 ASSISTANT:\n{values['final_response']}\n")
-                        print("-" * 60)
-        except Exception as e:
-            turn_error = e
-            print(f"\n❌ Error during turn execution: {str(e)}")
-        finally:
-            _write_trace_log(user_input, trace_entries, turn_context)
-            if obs_enabled:
-                log_turn_summary(
-                    elapsed_s=time.perf_counter() - turn_started,
-                    usage=turn_usage,
-                    turns_events=len(trace_entries),
-                )
-
-        if turn_error is not None:
-            continue
+        conversation_context.append({"role": "user", "content": user_input})
+        conversation_context.append({"role": "assistant", "content": answer})
+        if len(conversation_context) > MAX_CONTEXT_EXCHANGES * 2:
+            conversation_context = conversation_context[-(MAX_CONTEXT_EXCHANGES * 2):]
 
 
 if __name__ == "__main__":
