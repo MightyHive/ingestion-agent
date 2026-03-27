@@ -14,7 +14,6 @@ import sys
 import time
 from datetime import datetime
 
-<<<<<<< Updated upstream
 from typing import Awaitable, Callable
 
 from langgraph.graph import END, START, StateGraph
@@ -31,10 +30,6 @@ from synthesis_enrichment import (
     format_mandatory_data_block,
     merge_missing_structured_content,
 )
-=======
-from agents.software_engineer_agent import SoftwareEngineerDeps, run_software_engineer_agent
-from config.settings import settings
->>>>>>> Stashed changes
 from models.tool_outputs import to_json_safe
 from observability import (
     empty_usage,
