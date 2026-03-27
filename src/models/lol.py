@@ -1,18 +1,10 @@
-"""
-LOL Protocol (Lightweight Operation Language)
-
-Pydantic schemas for the contract between agents.
-Each agent MUST return an object extending BaseLOL with its own Payload type.
-PydanticAI uses Field(description=...) as implicit system prompt hints.
-"""
-
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 
 # Extend with coordinator / synthesizer / other specialists as they are added.
-AGENT_NAMES = Literal["data_architect"]
+AGENT_NAMES = Literal["data_architect", "software_engineer"]
 
 
 # ============================================================
@@ -36,7 +28,6 @@ class BaseLOL(BaseModel):
 
 # ============================================================
 # COORDINATOR — Plans parallel dispatch
-# Add: Payload/LOL per specialist agent (structured output each).
 # ============================================================
 
 class TaskStep(BaseModel):
@@ -45,9 +36,8 @@ class TaskStep(BaseModel):
     )
     instruction: str = Field(
         description=(
-            "Self-contained instruction for the agent. "
-            "Must include ALL required context; the agent does NOT read prior chat history. "
-            "For ambiguous follow-ups, copy lists or data from the coordinator context here."
+            "Self-contained instruction for the target agent. "
+            "Must include all required context because specialists do not read full chat history."
         )
     )
 
@@ -56,7 +46,7 @@ class CoordinatorPayload(BaseModel):
     tasks: List[TaskStep] = Field(
         description=(
             "Independent tasks for the current round. "
-            "All tasks must be runnable in parallel."
+            "All tasks should be runnable in parallel unless explicitly serialized in one instruction."
         )
     )
 
@@ -64,27 +54,26 @@ class CoordinatorPayload(BaseModel):
 class CoordinatorLOL(BaseLOL):
     id: Literal["coordinator"] = Field(
         default="coordinator",
-        description="Fixed identifier for the coordinator agent",
+        description="Fixed identifier for the coordinator agent.",
     )
     payload: CoordinatorPayload = Field(
-        description="Parallel dispatch plan with tasks for operator agents"
+        description="Parallel dispatch plan with specialist tasks."
     )
 
 
 # ============================================================
-# SYNTHESIZER — Final answer (template)
-# Add: SynthesizerAgent (PydanticAI) with this model as output_type.
+# SYNTHESIZER — Final user-facing answer
 # ============================================================
 
 class SynthesizerPayload(BaseModel):
     file_path: Optional[str] = Field(
         default=None,
-        description="Path of generated Markdown file if the user asked to export/save a document",
+        description="Path of generated Markdown file when user requested export/save.",
     )
     summary: str = Field(
         description=(
             "Unified final answer from specialist LOL reports on the event bus. "
-            "Never mention internal tools. Use bullet points for lists."
+            "Never mention internal tools."
         )
     )
 
@@ -92,10 +81,124 @@ class SynthesizerPayload(BaseModel):
 class SynthesizerLOL(BaseLOL):
     id: Literal["synthesizer"] = Field(
         default="synthesizer",
-        description="Fixed identifier for the synthesizer agent",
+        description="Fixed identifier for the synthesizer agent.",
     )
     payload: SynthesizerPayload = Field(
-        description="Synthesis result: final answer and optional generated file path"
+        description="Synthesis result: final answer and optional generated file path."
+    )
+
+
+class GeneratedFile(BaseModel):
+    path: str = Field(description="Generated or updated file path.")
+    description: Optional[str] = Field(
+        default=None,
+        description="Why this file was generated/changed.",
+    )
+
+
+class SoftwareEngineerPayload(BaseModel):
+    action: Literal[
+        "list_connectors",
+        "find_connector",
+        "read_connector",
+        "validate_connector_code",
+        "save_connector",
+        "overwrite_connector",
+        "get_gold_standard_code",
+        "modify_payload_and_columns",
+        "write_cf_code",
+        "identify_environment_variables",
+        "error",
+    ] = Field(
+        description=(
+            "Which tool outcome this turn should be filed under: use the **last** registered tool "
+            "that was decisive for the user-facing result. When authoring connector code, the turn "
+            "should normally end with `save_connector` (new file) or `overwrite_connector` (replace after user consent)—"
+            "not `write_cf_code`. Matches `@agent.tool` names; use `error` only when no successful tool path applies."
+        )
+    )
+    connector_name: Optional[str] = Field(
+        default=None, description="Target connector normalized name.")
+    source: Optional[str] = Field(
+        default=None, description="Connector source namespace.")
+    file_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Absolute path under the connector library after a successful `save_connector` or `overwrite_connector` result. "
+            "When status is OK/WARN and this turn authored or finalized connector Python, must be set from that tool output."
+        ),
+    )
+    validation: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Structured output from `validate_connector_code` (mirror tool JSON; do not invent fields).",
+    )
+    data: Optional[Dict[str, Any]] = Field(
+        default=None, description="Auxiliary structured operation data.")
+    generated_files: List[GeneratedFile] = Field(
+        default_factory=list,
+        description=(
+            "Only paths confirmed by tools or present on disk (e.g. save_connector / overwrite_connector output). "
+            "Do not list files that were not written."
+        ),
+    )
+    env_vars_required: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of environment variables the connector reads (e.g. via os.getenv). "
+            "Values are configured by DevOps / runtime / another agent—never embedded here."
+        ),
+    )
+    required_secrets: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of secrets or high-sensitivity env vars (subset or alias of env_vars_required). "
+            "This agent only lists names for downstream Secret Manager or coordinator handoff."
+        ),
+    )
+    api_dependencies: List[str] = Field(
+        default_factory=list,
+        description="External APIs/services consumed by the connector.",
+    )
+    missing_inputs: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Inputs missing from user context to proceed safely. If a connector file already exists and the user "
+            "has not authorized replace, include an explicit item such as confirmation to overwrite that path."
+        ),
+    )
+    review_requested: bool = Field(
+        default=False,
+        description=(
+            "True when this turn successfully validated connector `fetch` code intended for use (new or updated). "
+            "Read-only turns without validated new code: false. Downstream review is always part of the pipeline; "
+            "this flag marks that this turn produced reviewable connector work."
+        ),
+    )
+    review_reason: Optional[str] = Field(
+        default=None,
+        description="One line on why review matters for this change (e.g. validated new connector).",
+    )
+    review_notes: Optional[str] = Field(
+        default=None,
+        description=(
+            "Assumptions and facts for the next agent: API behavior, auth/env var names, pagination, limitations."
+        ),
+    )
+    summary: str = Field(
+        description=(
+            "Concise narrative for the next agent (e.g. synthesizer). Do not mention internal tool names or call syntax; "
+            "put machine-readable detail in structured fields (`review_notes`, `env_vars_required`, paths, etc.)."
+        )
+    )
+
+
+class SoftwareEngineerLOL(BaseLOL):
+    id: Literal["software_engineer"] = Field(
+        default="software_engineer",
+        description="Fixed identifier for software engineer component (must match graph node and target_agent).",
+    )
+    payload: SoftwareEngineerPayload = Field(
+        description="Software engineer connector-library operation result."
     )
 
 

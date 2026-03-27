@@ -8,11 +8,27 @@ from .lol import (
     DataArchitectPayload,
     DataArchitectLOL,
     AGENT_NAMES,
+    GeneratedFile,
+    SoftwareEngineerPayload,
+    SoftwareEngineerLOL,
 )
 
 from .tool_outputs import (
     ToolOutput,
     ToolStatus,
+    ConnectorRef,
+    ConnectorValidationOutput,
+    ConnectorListToolOutput,
+    ConnectorSearchToolOutput,
+    ConnectorReadToolOutput,
+    ConnectorValidateToolOutput,
+    ConnectorSaveToolOutput,
+    GoldStandardCodeToolOutput,
+    ModifyPayloadColumnsToolOutput,
+    CloudFunctionCodeToolOutput,
+    EnvironmentVariablesToolOutput,
+    ConnectorRunResult,
+    ConnectorExecuteToolOutput,
     to_json_safe,
     dump_tool_output,
 )

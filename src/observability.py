@@ -219,11 +219,15 @@ def _format_fields(fields: dict[str, Any]) -> str:
     return f" {' '.join(parts)}" if parts else ""
 
 
-def log_console(scope: str, phase: str, name: str, **fields: Any) -> None:
-    """Print one observability line when local observability is enabled."""
+def log_console(scope: str, phase: str, label: str, **fields: Any) -> None:
+    """Print one observability line when local observability is enabled.
+
+    Third positional is the human-readable subject (agent id, tool id, etc.). Named ``label`` so kwargs
+    like ``name=...`` from tool logging do not collide with this parameter.
+    """
     if not _OBSERVABILITY_ENABLED:
         return
-    print(f"   ↳ [{scope}:{phase}] {name}{_format_fields(fields)}", flush=True)
+    print(f"   ↳ [{scope}:{phase}] {label}{_format_fields(fields)}", flush=True)
 
 
 def log_agent_start(display_name: str, instruction: str | None = None) -> None:
@@ -271,11 +275,15 @@ def log_retry_end(
     log_console("retry", "end", agent_id, **fields)
 
 
-def run_logged_tool(name: str, fn: Callable[[], Dict[str, Any]], **fields: Any) -> Dict[str, Any]:
-    """Run a tool and emit compact start/end/error traces."""
+def run_logged_tool(tool_name: str, fn: Callable[[], Dict[str, Any]], **fields: Any) -> Dict[str, Any]:
+    """Run a tool and emit compact start/end/error traces.
+
+    First positional must be the stable tool id string. Use ``tool_name`` (not ``name``) so kwargs
+    like ``name=...`` from connector tools do not collide with this parameter.
+    """
     if not _OBSERVABILITY_ENABLED:
         return fn()
-    log_console("tool", "start", name, **fields)
+    log_console("tool", "start", tool_name, **fields)
     started = perf_counter()
     try:
         result = fn()
@@ -283,7 +291,7 @@ def run_logged_tool(name: str, fn: Callable[[], Dict[str, Any]], **fields: Any) 
         log_console(
             "tool",
             "err",
-            name,
+            tool_name,
             elapsed=f"{perf_counter() - started:.2f}s",
             error=type(exc).__name__,
             detail=str(exc),
@@ -295,7 +303,7 @@ def run_logged_tool(name: str, fn: Callable[[], Dict[str, Any]], **fields: Any) 
     log_console(
         "tool",
         "end",
-        name,
+        tool_name,
         elapsed=f"{perf_counter() - started:.2f}s",
         status=tool_status,
         code=code,
