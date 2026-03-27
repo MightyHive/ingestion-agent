@@ -180,6 +180,49 @@ class EnvironmentVariablesToolOutput(ToolOutput):
     )
 
 
+class ConnectorRunResult(BaseModel):
+    """Normalized runtime output returned by connector ``fetch``."""
+
+    status: ToolStatus = Field(description="Connector execution status.")
+    code: Optional[str] = Field(
+        default=None,
+        description="Optional connector-level status code.",
+    )
+    records: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Normalized records emitted by the connector.",
+    )
+    next_cursor: Optional[str] = Field(
+        default=None,
+        description="Pagination cursor for subsequent calls, when available.",
+    )
+    meta: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Connector execution metadata.",
+    )
+    errors: List[str] = Field(
+        default_factory=list,
+        description="Non-fatal warnings or runtime error details.",
+    )
+
+
+class ConnectorExecuteToolOutput(ToolOutput):
+    """Response for dynamic connector execution via ``fetch(params, context)``."""
+
+    connector: ConnectorRef = Field(description="Connector reference executed.")
+    params: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Input params passed to ``fetch``.",
+    )
+    context: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Execution context passed to ``fetch``.",
+    )
+    result: ConnectorRunResult = Field(
+        description="Normalized runtime result from connector execution.",
+    )
+
+
 # ============================================================
 # JSON-safe serialization helpers
 # ============================================================

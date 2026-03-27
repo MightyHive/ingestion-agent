@@ -26,6 +26,68 @@ class BaseLOL(BaseModel):
     )
 
 
+# ============================================================
+# COORDINATOR — Plans parallel dispatch
+# ============================================================
+
+class TaskStep(BaseModel):
+    target_agent: AGENT_NAMES = Field(
+        description="Exact name of the agent that will run this task"
+    )
+    instruction: str = Field(
+        description=(
+            "Self-contained instruction for the target agent. "
+            "Must include all required context because specialists do not read full chat history."
+        )
+    )
+
+
+class CoordinatorPayload(BaseModel):
+    tasks: List[TaskStep] = Field(
+        description=(
+            "Independent tasks for the current round. "
+            "All tasks should be runnable in parallel unless explicitly serialized in one instruction."
+        )
+    )
+
+
+class CoordinatorLOL(BaseLOL):
+    id: Literal["coordinator"] = Field(
+        default="coordinator",
+        description="Fixed identifier for the coordinator agent.",
+    )
+    payload: CoordinatorPayload = Field(
+        description="Parallel dispatch plan with specialist tasks."
+    )
+
+
+# ============================================================
+# SYNTHESIZER — Final user-facing answer
+# ============================================================
+
+class SynthesizerPayload(BaseModel):
+    file_path: Optional[str] = Field(
+        default=None,
+        description="Path of generated Markdown file when user requested export/save.",
+    )
+    summary: str = Field(
+        description=(
+            "Unified final answer from specialist LOL reports on the event bus. "
+            "Never mention internal tools."
+        )
+    )
+
+
+class SynthesizerLOL(BaseLOL):
+    id: Literal["synthesizer"] = Field(
+        default="synthesizer",
+        description="Fixed identifier for the synthesizer agent.",
+    )
+    payload: SynthesizerPayload = Field(
+        description="Synthesis result: final answer and optional generated file path."
+    )
+
+
 class GeneratedFile(BaseModel):
     path: str = Field(description="Generated or updated file path.")
     description: Optional[str] = Field(
