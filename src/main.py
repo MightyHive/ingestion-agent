@@ -30,6 +30,7 @@ from typing import Awaitable, Callable
 from langgraph.graph import END, START, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
 
+from agent_registry import ALL_AGENT_NAMES, NORMAL_AGENT_NAMES, SPECIAL_AGENT_NAMES
 from agents.coordinator_agent import build_coordinator_agent, CoordinatorDeps
 from agents.data_architect_agent import build_data_architect_agent, DataArchitectDeps
 from agents.software_engineer_agent import (
@@ -62,11 +63,6 @@ from observability import (
 
 MAX_RETRIES = 2
 MAX_CONTEXT_EXCHANGES = 5
-
-# Add: each id must match the graph node name and TaskStep.target_agent.
-SPECIAL_AGENT_NAMES = ["out_of_scope", "capabilities_help"]
-NORMAL_AGENT_NAMES: list[str] = ["data_architect", "software_engineer"]
-ALL_AGENT_NAMES = SPECIAL_AGENT_NAMES + NORMAL_AGENT_NAMES
 
 # Valid coordinator router destinations (barrier and shortcuts).
 COORDINATOR_ROUTE_DESTINATIONS = ALL_AGENT_NAMES + [

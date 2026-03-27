@@ -193,9 +193,9 @@ class SoftwareEngineerPayload(BaseModel):
 
 
 class SoftwareEngineerLOL(BaseLOL):
-    id: Literal["software_engineer_agent"] = Field(
-        default="software_engineer_agent",
-        description="Fixed identifier for software engineer component.",
+    id: Literal["software_engineer"] = Field(
+        default="software_engineer",
+        description="Fixed identifier for software engineer component (must match graph node and target_agent).",
     )
     payload: SoftwareEngineerPayload = Field(
         description="Software engineer connector-library operation result."

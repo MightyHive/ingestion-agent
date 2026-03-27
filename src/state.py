@@ -24,11 +24,19 @@ def _event_bus_reducer(current: list[dict], update: list[dict]) -> list[dict]:
 class AgentGraphState(TypedDict):
     user_query: str
 
+    # Coordinator planning output for current turn
+    coordinator_result: Optional[dict]
+    task_plan: dict[str, str]
+    dispatch_targets: list[str]
+
     # LOL event bus (reset each turn via reducer for new turns)
     event_bus: Annotated[list[dict], _event_bus_reducer]
 
     # Per-node usage for turn-level observability
     obs_usages: Annotated[list[dict], add]
+
+    # Sync point telemetry between fan-out and synthesizer
+    round_event_count: int
 
     # Final response produced by the active component
     final_response: Optional[str]

@@ -8,6 +8,8 @@ from typing import Any
 
 from pydantic_ai import Agent
 
+from agent_registry import NORMAL_AGENT_NAMES
+
 try:
     from pydantic_ai.models.vertexai import VertexAIModel  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover - vertexai module not in all pydantic-ai-slim releases
@@ -34,7 +36,7 @@ from config.settings import settings
 from models.lol import CoordinatorLOL
 from tools.coordinator_tools import CoordinatorDeps, register_coordinator_tools
 
-SYSTEM_PROMPT = """You are the Coordinating Agent: a Lead Technical Project Manager for an autonomous DataOps ingestion platform.
+SYSTEM_PROMPT = f"""You are the Coordinating Agent: a Lead Technical Project Manager for an autonomous DataOps ingestion platform.
 
 ## Role
 - You speak with the user, interpret intent, and **only** produce routing decisions as structured output.
@@ -55,7 +57,7 @@ SYSTEM_PROMPT = """You are the Coordinating Agent: a Lead Technical Project Mana
 
 ## Operator registry (critical)
 - `payload.tasks[].target_agent` must be an allowed operator id from the platform schema.
-- Registered specialist targets: **`data_architect`** and **`software_engineer`**.
+- Registered specialist targets: **{NORMAL_AGENT_NAMES}**.
 - Route by lane:
   - **AI_FACTORY:** usually starts with `data_architect` (schema/modeling), then follow-up task to `software_engineer`.
   - **FAST_TRACK:** usually routes directly to `software_engineer` for connector adaptation/implementation.
