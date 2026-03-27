@@ -30,11 +30,16 @@ from typing import Awaitable, Callable
 from langgraph.graph import END, START, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
 
+from agent_registry import ALL_AGENT_NAMES, NORMAL_AGENT_NAMES, SPECIAL_AGENT_NAMES
 from agents.coordinator_agent import build_coordinator_agent, CoordinatorDeps
 from agents.data_architect_agent import build_data_architect_agent, DataArchitectDeps
+from agents.software_engineer_agent import (
+    build_software_engineer_agent,
+    SoftwareEngineerDeps,
+)
 from agents.synthesizer_agent import build_synthesizer_agent
 from config.settings import settings
-from models.lol import DataArchitectLOL
+from models.lol import DataArchitectLOL, SoftwareEngineerLOL
 from state import AgentGraphState
 from synthesis_enrichment import (
     extract_enrichment_from_events,
@@ -58,11 +63,6 @@ from observability import (
 
 MAX_RETRIES = 2
 MAX_CONTEXT_EXCHANGES = 5
-
-# Add: each id must match the graph node name and TaskStep.target_agent.
-SPECIAL_AGENT_NAMES = ["out_of_scope", "capabilities_help"]
-NORMAL_AGENT_NAMES: list[str] = ["data_architect"]
-ALL_AGENT_NAMES = SPECIAL_AGENT_NAMES + NORMAL_AGENT_NAMES
 
 # Valid coordinator router destinations (barrier and shortcuts).
 COORDINATOR_ROUTE_DESTINATIONS = ALL_AGENT_NAMES + [
@@ -477,6 +477,51 @@ async def data_architect_node(state: AgentGraphState) -> dict:
     )
 
 
+async def software_engineer_node(state: AgentGraphState) -> dict:
+    """Invoke the Software Engineer agent and return a LOL event."""
+
+    async def _invoke(prompt: str) -> tuple[dict, dict]:
+        result = await build_software_engineer_agent().run(
+            prompt,
+            deps=SoftwareEngineerDeps(
+                project_id=settings.PROJECT_ID_DATA or settings.PROJECT_ID_LLM or "",
+                location=settings.LOCATION,
+            ),
+        )
+        lol = result.output.model_dump()
+        return lol, extract_usage(result)
+
+    default_payload = SoftwareEngineerLOL(
+        status="ERR",
+        reason="Software engineer failure.",
+        payload={
+            "action": "error",
+            "connector_name": None,
+            "source": None,
+            "file_path": None,
+            "validation": None,
+            "data": None,
+            "generated_files": [],
+            "env_vars_required": [],
+            "required_secrets": [],
+            "api_dependencies": [],
+            "missing_inputs": [],
+            "review_requested": False,
+            "review_reason": None,
+            "review_notes": None,
+            "summary": "Software engineer failed to process the request.",
+        },
+    ).payload.model_dump()
+    return await _run_specialist_node(
+        state,
+        "software_engineer",
+        "Software Engineer",
+        "   🧩 [Software Engineer working...]",
+        _invoke,
+        default_payload,
+    )
+
+
 def out_of_scope_node(state: AgentGraphState) -> dict:
     """Guardrail: request outside scope. Add: copy and rules for your domain."""
     if not is_observability_enabled():
@@ -624,6 +669,7 @@ builder = StateGraph(AgentGraphState)
 builder.add_node("prepare_new_turn", prepare_new_turn)
 builder.add_node("coordinator", coordinator_node)
 builder.add_node("data_architect", data_architect_node)
+builder.add_node("software_engineer", software_engineer_node)
 builder.add_node("out_of_scope", out_of_scope_node)
 builder.add_node("capabilities_help", capabilities_help_node)
 builder.add_node("coordinator_failure", coordinator_failure_node)
