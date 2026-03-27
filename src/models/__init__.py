@@ -1,6 +1,5 @@
 from .lol import (
     BaseLOL,
-<<<<<<< Updated upstream
     TaskStep,
     CoordinatorPayload,
     CoordinatorLOL,
@@ -9,11 +8,9 @@ from .lol import (
     DataArchitectPayload,
     DataArchitectLOL,
     AGENT_NAMES,
-=======
     GeneratedFile,
     SoftwareEngineerPayload,
     SoftwareEngineerLOL,
->>>>>>> Stashed changes
 )
 
 from .tool_outputs import (
@@ -30,6 +27,8 @@ from .tool_outputs import (
     ModifyPayloadColumnsToolOutput,
     CloudFunctionCodeToolOutput,
     EnvironmentVariablesToolOutput,
+    ConnectorRunResult,
+    ConnectorExecuteToolOutput,
     to_json_safe,
     dump_tool_output,
 )
