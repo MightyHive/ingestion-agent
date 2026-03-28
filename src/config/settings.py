@@ -6,6 +6,10 @@ load_dotenv()
 
 
 class Settings:
+    """Application configuration from environment variables."""
+
+    RUN_MODE = os.getenv("RUN_MODE", "cli").strip().lower()
+
     PROJECT_ID_LLM = os.getenv("PROJECT_ID_LLM")
     PROJECT_ID_DATA = os.getenv("PROJECT_ID_DATA")
     LOCATION = os.getenv("LOCATION", "us-central1")
