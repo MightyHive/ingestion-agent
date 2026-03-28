@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 
 # Extend with coordinator / synthesizer / other specialists as they are added.
-AGENT_NAMES = Literal["data_architect", "software_engineer"]
+AGENT_NAMES = Literal["data_architect", "software_engineer", "api_researcher"]
 
 
 # ============================================================
@@ -95,6 +95,9 @@ class GeneratedFile(BaseModel):
         description="Why this file was generated/changed.",
     )
 
+# ============================================================
+# SOFTWARE ENGINEER — Connector code engineering
+# ============================================================
 
 class SoftwareEngineerPayload(BaseModel):
     action: Literal[
@@ -201,6 +204,136 @@ class SoftwareEngineerLOL(BaseLOL):
         description="Software engineer connector-library operation result."
     )
 
+# ============================================================
+# API RESEARCHER — Technical discovery and documentation research
+# ============================================================
+class APIResearcherFieldMapping(BaseModel):
+    """Maps a canonical metric name to its exact API field and BigQuery type."""
+    name: str = Field(
+        description="Canonical field name used across all platforms (e.g. 'impressions', 'spend')"
+    )
+    type: str = Field(
+        description="BigQuery column type: FLOAT64, INTEGER, STRING, DATE, TIMESTAMP, BOOLEAN"
+    )
+    api_field: str = Field(
+        description=(
+            "Exact field name in the API response. "
+            "Use dot notation for nested fields (e.g. 'metrics.cost_micros'). "
+            "Set to 'NOT_AVAILABLE' if the platform does not expose this metric. "
+            "Set to 'DERIVED(formula)' if the field must be calculated (e.g. 'DERIVED(clicks/impressions)')."
+        )
+    )
+    note: Optional[str] = Field(
+        default=None,
+        description=(
+            "Type gotchas, cast requirements, or normalization instructions for this field. "
+            "Examples: 'API returns STRING — cast to numeric', "
+            "'DIVIDE BY 1,000,000 — never store raw micros', "
+            "'PERCENTAGE format (5.2 = 5.2%) — normalize before cross-platform comparisons'."
+        )
+    )
+ 
+ 
+class APIResearcherAuthInfo(BaseModel):
+    method: str = Field(
+        description="Authentication method, e.g. 'OAuth 2.0', 'Service Account via google-ads.yaml'"
+    )
+    required_credentials: List[str] = Field(
+        description="Credential names the pipeline will need (e.g. ['access_token', 'advertiser_id'])"
+    )
+    token_type: str = Field(
+        description="Token type and lifecycle, e.g. 'System User Token (non-expiring)'"
+    )
+    expiry: str = Field(
+        description="Token expiry, e.g. 'non-expiring', '1 hour (refresh_token long-lived)'"
+    )
+ 
+ 
+class FreshnessCheck(BaseModel):
+    checked: bool = Field(
+        description="True if live documentation was fetched and compared against stored data"
+    )
+    changes_detected: bool = Field(
+        description="True if the live docs differ meaningfully from stored reference data"
+    )
+    delta: Optional[str] = Field(
+        default=None,
+        description="Short description of what changed (new API version, deprecated fields, auth changes). Null if no changes."
+    )
+ 
+ 
+class APIResearcherPayload(BaseModel):
+    action: Literal[
+        "freshness_check",       # known platform — checked live docs vs stored
+        "full_investigation",    # unknown platform — searched web + read docs
+        "schema_analysis",       # analyzed JSON sample to infer field types
+        "error",                 # investigation failed, see BaseLOL.reason
+    ] = Field(
+        description=(
+            "Which investigation path was taken this turn. "
+            "Use 'freshness_check' for known platforms even if no changes were found. "
+            "Use 'error' only when no successful investigation path completed."
+        )
+    )
+    platform: str = Field(
+        description="Full display name of the investigated platform (e.g. 'Meta Marketing API')"
+    )
+    auth: APIResearcherAuthInfo = Field(
+        description="Authentication requirements for the reporting endpoint"
+    )
+    reporting_endpoint: str = Field(
+        description=(
+            "Full URL or SDK method of the main read-only reporting/analytics endpoint. "
+            "For Google Ads: describe the SDK method, not a REST URL."
+        )
+    )
+    available_fields: List[APIResearcherFieldMapping] = Field(
+        description=(
+            "Exactly 9 field mappings for the MVP metrics: "
+            "impressions, clicks, spend, ctr, conversions, video_views, reach, campaign_name, date. "
+            "Always include all 9. Set api_field='NOT_AVAILABLE' if the platform doesn't expose it."
+        )
+    )
+    pagination: str = Field(
+        description="Pagination strategy, e.g. 'cursor-based (paging.after)' or 'page-based (page >= total_page)'"
+    )
+    rate_limit: str = Field(
+        description="Key rate limit constraints relevant to a daily ingestion job"
+    )
+    freshness_check: FreshnessCheck = Field(
+        description="Whether live docs were checked and if anything changed vs stored reference"
+    )
+    missing_inputs: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Inputs that were unavailable during investigation and may affect downstream accuracy. "
+            "Examples: 'No JSON response sample available — field types inferred from docs only', "
+            "'Documentation behind login wall — could not verify freshness'."
+        )
+    )
+    summary: str = Field(
+        description=(
+            "Concise narrative for the next agent (Data Architect). "
+            "Include: platform investigated, action taken, any gotchas the DDL must account for, "
+            "and whether freshness check found changes. "
+            "Do not mention internal tool names."
+        )
+    )
+ 
+
+class APIResearcherLOL(BaseLOL):
+    id: Literal["api_researcher"] = Field(
+        default="api_researcher",
+        description="Fixed identifier for the API Researcher agent",
+    )
+    payload: APIResearcherPayload = Field(
+        description=(
+            "Investigation result: auth info, reporting endpoint, field mappings (with notes), "
+            "pagination, rate limits, and freshness check. "
+            "Handed off to the Data Architect agent to generate BigQuery DDL."
+        )
+    )
+
 
 # ============================================================
 # DATA ARCHITECT — BigQuery Raw/Bronze modeling and DDL
@@ -239,3 +372,5 @@ class DataArchitectLOL(BaseLOL):
             "and optional DDL text for the event bus / synthesizer."
         ),
     )
+
+

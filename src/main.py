@@ -37,9 +37,10 @@ from agents.software_engineer_agent import (
     build_software_engineer_agent,
     SoftwareEngineerDeps,
 )
+from agents.api_researcher_agent import build_api_researcher_agent, APIResearcherDeps
 from agents.synthesizer_agent import build_synthesizer_agent
 from config.settings import settings
-from models.lol import DataArchitectLOL, SoftwareEngineerLOL
+from models.lol import DataArchitectLOL, SoftwareEngineerLOL, APIResearcherLOL
 from state import AgentGraphState
 from synthesis_enrichment import (
     extract_enrichment_from_events,
@@ -451,6 +452,58 @@ async def coordinator_node(state: AgentGraphState) -> dict:
     }
 
 
+async def api_researcher_node(state: AgentGraphState) -> dict:
+    """Invoke the API Researcher agent and return a LOL event."""
+    async def _invoke(prompt: str) -> tuple[dict, dict]:
+            # Enrich instruction with known platform context if applicable
+            from agents.api_researcher_agent import _resolve_platform
+            platform_data = _resolve_platform(prompt)
+            if platform_data:
+                prompt = (
+                    f"{prompt}\n\n"
+                    f"[KNOWN PLATFORM]\n"
+                    f"display_name:   {platform_data['display_name']}\n"
+                    f"docs_url:       {platform_data['docs_url']}\n"
+                    f"reference_file: {platform_data['reference_file']}\n\n"
+                    f"Step 1: call read_documentation_url('{platform_data['reference_file']}') — source of truth.\n"
+                    f"Step 2: call read_documentation_url('{platform_data['docs_url']}') — freshness check.\n"
+                    f"Set action='freshness_check'."
+                )
+            result = await build_api_researcher_agent().run(
+                prompt,
+                deps=APIResearcherDeps(
+                    project_id=settings.PROJECT_ID_LLM or "",
+                    location=settings.LOCATION,
+                ),
+            )
+            return result.output.model_dump(), extract_usage(result)
+
+    default_payload = APIResearcherLOL(
+        status="ERR",
+        reason="API Researcher failure.",
+        payload={
+            "action": "error",
+            "platform": "",
+            "auth": {"method": "UNKNOWN", "required_credentials": [], "token_type": "UNKNOWN", "expiry": "UNKNOWN"},
+            "reporting_endpoint": "UNKNOWN",
+            "available_fields": [],
+            "pagination": "UNKNOWN",
+            "rate_limit": "UNKNOWN",
+            "freshness_check": {"checked": False, "changes_detected": False},
+            "missing_inputs": [],
+            "summary": "API Researcher failed to process the request.",
+        },
+    ).payload.model_dump()
+
+    return await _run_specialist_node(
+        state,
+        "api_researcher",
+        "API Researcher",
+        "   🔍 [API Researcher investigating...]",
+        _invoke,
+        default_payload,
+    )
+
 async def data_architect_node(state: AgentGraphState) -> dict:
     """Invoke the Data Architect agent and return a LOL event."""
 
@@ -668,6 +721,7 @@ builder = StateGraph(AgentGraphState)
 
 builder.add_node("prepare_new_turn", prepare_new_turn)
 builder.add_node("coordinator", coordinator_node)
+builder.add_node("api_researcher", api_researcher_node)
 builder.add_node("data_architect", data_architect_node)
 builder.add_node("software_engineer", software_engineer_node)
 builder.add_node("out_of_scope", out_of_scope_node)
