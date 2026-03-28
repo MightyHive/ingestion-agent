@@ -1,7 +1,6 @@
 ---
 name: paid-media-api
-description: API Investigator Agent (Data Sourcer). Specializes in researching external API documentation and extracting everything needed to build a read-only data pipeline: endpoints, authentication flows (OAuth, Bearer tokens, API keys), rate limits, pagination patterns, and raw JSON response schemas. Covers Meta Marketing API, Google Ads API, YouTube Data API, and TikTok Marketing API, but also handles unknown or custom APIs via search_web, read_documentation_url, and analyze_json_schema.   Always trigger this skill before writing any code or proposing any schema. This agent NEVER writes, creates, or modifies campaigns — read-only extraction only.
-
+description: "API Investigator Agent (Data Sourcer). Specializes in researching external API documentation and extracting everything needed to build a read-only data pipeline: endpoints, authentication flows (OAuth, Bearer tokens, API keys), rate limits, pagination patterns, and raw JSON response schemas. Covers Meta Marketing API, Google Ads API, YouTube Data API, and TikTok Marketing API, but also handles unknown or custom APIs via search_web, read_documentation_url, and analyze_json_schema. Always trigger this skill before writing any code or proposing any schema. This agent NEVER writes, creates, or modifies campaigns — read-only extraction only."
 ---
 
 # Paid Media API Skill — Read-Only Data Extraction
@@ -22,15 +21,14 @@ Is api_name in KNOWN PLATFORMS list?
   ├── YES → 1. Load reference file for that platform
   │          2. freshness_check: read_documentation_url(docs_url)
   │             → compare against reference file
-  │             → if changes detected: update reference file + flag delta to Coordinator
+  │             → if changes detected: flag delta to Coordinator
   │          3. Go to → EXTRACT FIELDS
   │
   └── NO  → 1. search_web("{api_name} official API documentation")
              2. read_documentation_url(top result)
                 → extract: base_url, auth_method, reporting_endpoint,
                   available_fields, pagination, rate_limits
-             3. analyze_json_schema(sample_response)
-                → infer field names, types, nesting
+             3. analyze_json_schema(sample_response) → infer field types
              4. Go to → EXTRACT FIELDS
 
 EXTRACT FIELDS
@@ -46,12 +44,11 @@ OUTPUT → return Investigation Report (see format below)
 
 ## Known Platforms
 
-| Platform | Docs URL | Auth pattern | Reference file |
+| Platform | Docs URL | Auth | Reference file |
 |---|---|---|---|
-| Meta Marketing API | https://developers.facebook.com/docs/marketing-apis/ | OAuth 2.0 → System User Token | `references/meta.md` |
-| Google Ads API | https://developers.google.com/google-ads/api/docs/start | OAuth 2.0 + developer_token | `references/google-ads.md` |
-| YouTube Data API v3 | https://developers.google.com/youtube/v3 | OAuth 2.0 / API Key | `references/google-ads.md` |
-| TikTok Marketing API | https://business-api.tiktok.com/portal/docs | OAuth 2.0 → Access-Token header | `references/tiktok.md` |
+| Meta Marketing API | https://developers.facebook.com/docs/marketing-apis/ | OAuth 2.0 (v21.0) | `references/meta.md` |
+| Google Ads API | https://developers.google.com/google-ads/api/docs/start | Service Account via google-ads.yaml | `references/google-ads.md` |
+| TikTok Marketing API | https://business-api.tiktok.com/portal/docs | OAuth 2.0 (v1.3) | `references/tiktok.md` |
 
 For unknown APIs: run the full investigation flow, then save findings as a new file in `references/`.
 
@@ -59,111 +56,95 @@ For unknown APIs: run the full investigation flow, then save findings as a new f
 
 ## 🔐 AUTHENTICATION
 
-### Meta (Facebook / Instagram)
-
+### Meta
 ```
-1. App Review → get app_id + app_secret
-2. OAuth flow → short-lived User Access Token (~1h)
-3. Exchange for long-lived token (~60 days):
-   GET https://graph.facebook.com/v21.0/oauth/access_token
-     ?grant_type=fb_exchange_token
-     &client_id={app_id}
-     &client_secret={app_secret}
-     &fb_exchange_token={short_lived_token}
-4. Production: System User in Business Manager → non-expiring token
+Base URL: https://graph.facebook.com/v21.0/
+Auth:     OAuth 2.0
+Token:    System User Token (non-expiring) — recommended for server-to-server
+Permissions needed (read-only): ads_read, read_insights
 ```
 
-Permissions needed (read-only): `ads_read`, `read_insights`
-Current API version: **v21.0** (always pin in URL)
-
----
-
-### Google Ads API
-
+### Google Ads
 ```
-Credentials needed:
-  - client_id + client_secret  (Google Cloud Console)
-  - developer_token            (Google Ads → Tools → API Center)
-  - refresh_token              (OAuth consent flow)
-  - login_customer_id          (MCC ID, no dashes)
+Auth:     Service Account via google-ads.yaml
+Required: developer_token, login_customer_id, json_key_file_path
+SDK:      google-ads==29.2.0 (Python)
 
-Token refresh:
-POST https://oauth2.googleapis.com/token
-  grant_type=refresh_token &client_id={} &client_secret={} &refresh_token={}
+⚠️ Google Ads has NO traditional REST API.
+   All data fetched via Python SDK: ga_service.search_stream()
+   Never called directly via curl or requests.
 ```
 
-Required headers on every request:
-`Authorization: Bearer {token}` · `developer-token: {token}` · `login-customer-id: {mcc_id}`
-
----
-
-### TikTok Marketing API
-
+### TikTok
 ```
-1. Register app → ads.tiktok.com/marketing_api/apps/
-2. OAuth redirect → GET https://business-api.tiktok.com/portal/auth
-3. Exchange code → POST /open_api/v1.3/oauth2/access_token/
-   { "app_id": "...", "secret": "...", "auth_code": "..." }
-   → returns access_token (long-lived) + advertiser_ids[]
+Base URL: https://business-api.tiktok.com/open_api/v1.3/
+Auth:     OAuth 2.0
+Header:   Access-Token: {access_token}
+advertiser_id: passed as query param, NOT in URL path
 ```
-
-All calls: `Header: Access-Token: {access_token}`
 
 ---
 
 ## 📡 REPORTING ENDPOINTS (read-only)
 
-### Meta
+### Meta — Performance
 
 ```
-GET https://graph.facebook.com/v21.0/{act_ACCOUNT_ID}/insights
-  ?fields=campaign_name,impressions,clicks,spend,reach,ctr,
-          actions,video_play_actions,video_p100_watched_actions
-  &date_preset=last_7d
-  &level=campaign          # campaign | adset | ad | account
-  &access_token={token}
+Endpoint: GET /{account_id}/insights
+Level:    campaign + ad
+Lookback: 7 days rolling
+Granularity: date_start (day)
 
-Pagination: cursor-based → loop on response.paging.next
-Async (large ranges): POST /insights → poll report_run_id → GET /insights
+Key fields:
+  impressions, link_click_default_uas (clicks), spend, reach,
+  video_p25/50/75/100_watched_default_uas, video_30_sec_watched_default_uas
+
+⚠️ ALL numeric fields arrive as STRINGS from the API — always cast before loading to BQ.
 ```
 
----
-
-### Google Ads
+### Google Ads — Performance
 
 ```
-POST https://googleads.googleapis.com/v17/customers/{customer_id}/googleAds:search
-{
-  "query": "
-    SELECT campaign.id, campaign.name,
-      metrics.impressions, metrics.clicks, metrics.cost_micros,
-      metrics.ctr, metrics.conversions, metrics.video_views,
-      segments.date
-    FROM campaign
-    WHERE segments.date DURING LAST_7_DAYS
-  "
-}
-cost_micros ÷ 1,000,000 = real currency value
-Use search_stream for large result sets (avoids pagination overhead)
+Method:   ga_service.search_stream(customer_id, query)
+Resource: ad_group_ad with metrics.* and segments.date
+Lookback: 7 days rolling
+Granularity: segments.date (required for daily rows)
+
+Example GAQL:
+  SELECT campaign.id, ad_group_ad.ad.id, segments.date,
+    metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.ctr,
+    metrics.video_views, metrics.video_quartile_p25_rate,
+    metrics.video_quartile_p100_rate
+  FROM ad_group_ad
+  WHERE segments.date DURING LAST_7_DAYS
+
+⚠️ cost_micros: always divide by 1,000,000 — never store raw micros in BQ.
+⚠️ video_quartile_p*_rate: these are RATES (0.0–1.0), not counts.
+⚠️ IDs (campaign, ad group, ad) are returned as int64 — cast to STRING.
+⚠️ Without segments.date, metrics aggregate across the full date range.
 ```
 
----
-
-### TikTok
+### TikTok — Performance
 
 ```
-GET https://business-api.tiktok.com/open_api/v1.3/report/integrated/get/
-  ?advertiser_id={id}
-  &report_type=BASIC
-  &dimensions=["campaign_id","stat_time_day"]
-  &metrics=["spend","impressions","clicks","ctr","reach",
-            "video_play_actions","video_watched_2s","video_views_p100"]
-  &start_date=2024-01-01
-  &end_date=2024-01-31    # max 30-day range per request
-  Header: Access-Token: {token}
+Endpoint: GET /report/integrated/get/
+report_type: BASIC
+Lookback: 7 days rolling
+Granularity: stat_time_day
 
-Pagination: page-based → increment page until page * page_size >= total_number
-Always check: code == 0 before reading data
+Request params:
+  advertiser_id (query param), report_type, dimensions, metrics, start_date, end_date, page_size
+
+Key metrics:
+  spend, impressions, clicks, reach, ctr, cpc, cpm,
+  video_play_actions, video_watched_2s/6s,
+  video_views_p25/50/75/100
+
+⚠️ spend is already in currency units (NOT micros) — do NOT divide.
+⚠️ ctr is a PERCENTAGE (5.2 = 5.2%), not a ratio — normalize for cross-platform.
+⚠️ video_views_p* are ABSOLUTE COUNTS (opposite of Google Ads rates).
+⚠️ stat_time_day includes time component (YYYY-MM-DD HH:MM:SS) — truncate to date.
+⚠️ Max date range per request: 30 days — chunk for historical backfills.
 ```
 
 ---
@@ -172,31 +153,29 @@ Always check: code == 0 before reading data
 
 | Platform | Limit | Notes |
 |---|---|---|
-| Meta | 200 calls/hour (app-level) | Check `X-Business-Use-Case-Usage` response header |
-| Meta Insights | Async recommended for > 7 days | Use report_run_id flow |
-| Google Ads | ~15,000 queries/day | Use `search_stream` for large results |
-| TikTok | 10 req/sec · 60 req/min (reporting) | Max 30-day range per request |
+| Meta | cursor-based pagination | iterate `after` cursor until `next` is absent |
+| Google Ads | ~15,000 queries/day | use `search_stream` — handles pagination automatically |
+| TikTok | 10 req/sec · 60 req/min (reporting) | max 30-day range; max page_size 1,000 |
 
 ---
 
-## 🚨 COMMON ERRORS
+## 🚨 CROSS-PLATFORM GOTCHAS
 
-| Platform | Error | Fix |
-|---|---|---|
-| Meta | `#190` Invalid token | Refresh or regenerate |
-| Meta | `#17` Rate limit | Exponential backoff |
-| Meta | `#100` Invalid parameter | Check field names in Graph API reference |
-| Google Ads | `QUERY_ERROR` | Validate GAQL in Google Ads Query Builder |
-| Google Ads | `AuthorizationError` | Check developer_token level (test vs production) |
-| TikTok | `40001` Invalid token | Re-authenticate |
-| TikTok | `50002` Rate limit | Wait and retry |
-| TikTok | `40013` Invalid advertiser ID | Confirm advertiser_id matches token scope |
+| Issue | Meta | Google Ads | TikTok |
+|---|---|---|---|
+| Numeric fields as strings | ✅ Yes — cast everything | ❌ Native types | ❌ Mostly native |
+| Spend unit | Float (currency) | **Micros ÷ 1,000,000** | Float (currency, NOT micros) |
+| CTR format | Ratio (0.05 = 5%) | Ratio | **Percentage (5.2 = 5.2%)** |
+| Video quartiles | % watched counts | **Rates 0.0–1.0** | Absolute counts |
+| IDs type | String | **int64 → cast to STRING** | String |
+| API access | REST (curl-able) | **Python SDK only** | REST (curl-able) |
+| Conversions structure | `action_type` array | Segments per conversion action | **Flat metrics (no array)** |
 
 ---
 
 ## 📤 OUTPUT — Investigation Report
 
-Return this JSON structure to the Coordinator after every investigation:
+Return this JSON to the Coordinator after every investigation:
 
 ```json
 {
@@ -209,17 +188,18 @@ Return this JSON structure to the Coordinator after every investigation:
   },
   "reporting_endpoint": "GET https://graph.facebook.com/v21.0/{act_id}/insights",
   "available_fields": [
-    { "name": "impressions",   "type": "INTEGER", "api_field": "impressions" },
-    { "name": "clicks",        "type": "INTEGER", "api_field": "clicks" },
-    { "name": "spend",         "type": "FLOAT",   "api_field": "spend" },
-    { "name": "ctr",           "type": "FLOAT",   "api_field": "ctr" },
-    { "name": "conversions",   "type": "INTEGER", "api_field": "actions[offsite_conversion.fb_pixel_purchase]" },
-    { "name": "video_views",   "type": "INTEGER", "api_field": "video_play_actions" },
-    { "name": "campaign_name", "type": "STRING",  "api_field": "campaign_name" },
-    { "name": "date",          "type": "DATE",    "api_field": "date_start" }
+    { "name": "impressions",   "type": "FLOAT64", "api_field": "impressions",              "note": "API returns STRING — cast to numeric" },
+    { "name": "clicks",        "type": "FLOAT64", "api_field": "link_click_default_uas",   "note": "API returns STRING" },
+    { "name": "spend",         "type": "FLOAT64", "api_field": "spend",                    "note": "API returns STRING — cast to float" },
+    { "name": "ctr",           "type": "FLOAT64", "api_field": "DERIVED(clicks/impressions)", "note": "Not a direct field — derive or calculate" },
+    { "name": "reach",         "type": "FLOAT64", "api_field": "reach",                    "note": "API returns STRING" },
+    { "name": "conversions",   "type": "FLOAT64", "api_field": "conversions",              "note": "Generic total conversions" },
+    { "name": "video_views",   "type": "FLOAT64", "api_field": "video_play_actions",       "note": "Use video_p100_watched for completions" },
+    { "name": "campaign_name", "type": "STRING",  "api_field": "campaign_name",            "note": "" },
+    { "name": "date",          "type": "TIMESTAMP","api_field": "date_start",              "note": "Format: YYYY-MM-DD" }
   ],
-  "pagination": "cursor-based (paging.next)",
-  "rate_limit": "200 calls/hour; async recommended for >7 days",
+  "pagination": "cursor-based — iterate paging.after until paging.next is absent",
+  "rate_limit": "no hard per-minute limit; async recommended for date ranges >7 days",
   "freshness_check": {
     "checked": true,
     "changes_detected": false,
@@ -228,14 +208,14 @@ Return this JSON structure to the Coordinator after every investigation:
 }
 ```
 
-This JSON is the handoff to the Data Modeler agent, which uses `available_fields` to propose a BigQuery DDL.
+This JSON is the handoff to the Data Modeler agent → `proponer_esquema_bq`.
 
 ---
 
 ## 📂 Reference Files
 
-- `references/meta.md` — Insights fields, breakdowns, pagination, batch requests
-- `references/google-ads.md` — GAQL resources, metrics, segments, error handling
-- `references/tiktok.md` — Reporting fields, pixel events, pagination, response structure
+Load only the file relevant to the current platform:
 
-Load only the file relevant to the current platform.
+- `references/meta.md` — full field tables (Structural + Performance + Conversions), pagination, all gotchas
+- `references/google-ads.md` — GAQL fields, micros handling, video rates, conversion segments, gotchas
+- `references/tiktok.md` — full field tables, flat conversion metrics, pagination, CTR normalization, gotchas
