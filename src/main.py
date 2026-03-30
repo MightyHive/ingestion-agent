@@ -521,7 +521,18 @@ async def data_architect_node(state: AgentGraphState) -> dict:
     default_payload = DataArchitectLOL(
         status="ERR",
         reason="Data architect failure.",
-        payload={"dataset_target": "", "action_taken": "error"},
+        payload={
+            "action_taken": "error",
+            "dataset_target": "",
+            "table_name": None,
+            "selected_fields": [],
+            "schema_preview": [],
+            "proposed_ddl": None,
+            "sql_preview": None,
+            "ddl_approved": False,
+            "missing_inputs": [],
+            "summary": "Data Architect failed to process the request.",
+        },
     ).payload.model_dump()
     return await _run_specialist_node(
         state,
