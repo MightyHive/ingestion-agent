@@ -492,6 +492,9 @@ async def api_researcher_node(state: AgentGraphState) -> dict:
             "freshness_check": {"checked": False, "changes_detected": False},
             "missing_inputs": [],
             "summary": "API Researcher failed to process the request.",
+            "total_fields_discovered":0,
+            "canonical_fields_found":0,
+            "discovery_method":"docs_only",
         },
     ).payload.model_dump()
 
