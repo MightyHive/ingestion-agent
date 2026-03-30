@@ -414,24 +414,108 @@ class APIResearcherLOL(BaseLOL):
 # DATA ARCHITECT — BigQuery Raw/Bronze modeling and DDL
 # ============================================================
 
+class BQSchemaField(BaseModel):
+    """
+    Single field in the BigQuery schema preview.
+    Mirrors the table shown in the UI mockup.
+    """
+    field_name: str = Field(
+        description=(
+            "Snake_case column name in BigQuery. "
+            "Derived from the platform's api_field: strip dots, normalize separators. "
+            "Example: 'metrics.cost_micros' → 'cost_micros'."
+        )
+    )
+    type: str = Field(
+        description="BigQuery column type: STRING, FLOAT64, INT64, TIMESTAMP, DATE, BOOLEAN."
+    )
+    mode: Literal["REQUIRED", "NULLABLE"] = Field(
+        description=(
+            "REQUIRED only for columns guaranteed non-null by the API contract "
+            "(e.g. ingest_ts, platform, date). Default to NULLABLE for all metric fields."
+        )
+    )
+    description: str = Field(
+        description=(
+            "Human-readable column description shown in the schema preview. "
+            "Incorporate the platform label, any cast/normalization note, and semantics "
+            "when available. Keep it under 120 characters."
+        )
+    )
+
 class DataArchitectPayload(BaseModel):
     proposed_ddl: Optional[str] = Field(
         default=None,
         description=(
-            "Full CREATE TABLE / CREATE SCHEMA DDL proposed for the Raw/Bronze layer, "
+            "Full CREATE TABLE / CREATE SCHEMA DDL proposed for the Raw/Bronze layer."
+            "Must be consistent with schema_preview."
             "using BigQuery SQL. Omit or null if the turn only listed datasets or validated inputs without drafting DDL."
+            "Null if the turn only listed datasets or no field were selected."
         ),
     )
     dataset_target: str = Field(
+        default="",
         description=(
             "Target BigQuery dataset for raw ingestion (e.g. raw_social, raw_youtube). "
             "Must align with Medallion naming: raw/bronze landing zone, not curated silver/gold."
         ),
     )
+    table_name: Optional[str] = Field(
+        default=None,
+        description=("Target table name in snake_case (e.g. 'meta_perfomance_raw', 'tiktok_ads_raw')."
+        "Null until schema is proposed and user approves the table name.")
+    )
+    selected_fields: List[str] = Field(
+        default_factory=list,
+        description=("List of api_field values the user chose from the full catalog."
+        "Populated from the user instruction. Used to filter available_fields for the schema preview."
+        "From the API Researcher LOL before generating DDL.")
+    )
+    schema_preview: List[BQSchemaField] = Field(
+        default_factory=list,
+        description=("Ordered list of BigQuery columns for the proposed table."
+        "This is the data shown in the UI schema preview table.")
+    )
     action_taken: str = Field(
         description=(
             "Short machine-readable label for what this agent did in this turn, e.g. "
-            "'listed_raw_datasets', 'proposed_schema', 'executed_ddl', 'rejected_unsafe_ddl', 'clarification_needed'."
+            "'listed_raw_datasets', 'proposed_schema', 'awaiting_approval', "
+            "'executed_ddl', 'rejected_unsafe_ddl', 'clarification_needed', 'error'."
+        ),
+    )
+    sql_preview: Optional[str] = Field(
+        default=None,
+        description=(
+            "Short illustrative SELECT query using the proposed table, "
+            "showing canonical aggregations (SUM(spend), COUNT(*), GROUP BY date, etc.). "
+            "Shown in the UI SQL preview panel. Null until schema is proposed."
+        ),
+    )
+    ddl_approved: bool = Field(
+        default=False,
+        description=(
+            "True ONLY when the user has explicitly confirmed execution in this turn "
+            "(e.g. 'yes, execute', 'apply the DDL'). "
+            "The agent must NEVER set this to True on its own initiative. "
+            "execute_ddl must not be called when this is False."
+        ),
+    )
+
+    missing_inputs: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Inputs missing to proceed. Examples: "
+            "'No fields selected — ask user which fields to include', "
+            "'dataset_target not confirmed — listing available datasets', "
+            "'DDL not yet approved by user'."
+        ),
+    )
+    summary: str = Field(
+        default="",
+        description=(
+            "Concise narrative for the Synthesizer. Include: platform, table proposed, "
+            "field count, any typing gotchas applied, and whether DDL is pending approval "
+            "or was executed. Do not mention internal tool names."
         ),
     )
 
