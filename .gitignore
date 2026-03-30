@@ -5,8 +5,8 @@
 .env.*
 *.key
 *.pem
-# Ignorar JSONs en la raíz por si descargas las Service Accounts de GCP
-*.json 
+# Solo ignorar JSONs en la raíz por si descargas las Service Accounts de GCP 
+/*.json 
 
 # ==========================================
 # 🐍 Python & Entorno Virtual
@@ -38,3 +38,16 @@ chroma_db/
 .idea/
 .DS_Store
 Thumbs.db
+
+# ==========================================
+# 📂 Frontend
+# ==========================================
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/dist/
+frontend/*.egg-info/
+frontend/*.py[cod]
+frontend/$py.class
+frontend/env/   

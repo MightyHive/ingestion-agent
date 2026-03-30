@@ -21,6 +21,8 @@ ToolStatus = Literal["OK", "WARN", "ERR"]
 # Shared base for all tools
 # ============================================================
 
+
+
 class ToolOutput(BaseModel):
     """Base contract for any tool result."""
 
@@ -37,6 +39,65 @@ class ToolOutput(BaseModel):
         default=None,
         description="Short message for the consuming agent.",
     )
+
+# ============================================================
+# API Researcher Tools
+# ============================================================
+
+class SearchResult(BaseModel):
+    """Single result from search_web."""
+    title: str
+    href: str
+    body: str
+ 
+ 
+class SearchWebOutput(ToolOutput):
+    """Output of the search_web tool."""
+    results: List[SearchResult] = Field(
+        default_factory=list,
+        description="Ordered list of search results (title, URL, snippet). Empty on ERR.",
+    )
+    query: str = Field(
+        description="The search query that was executed."
+    )
+ 
+ 
+class ReadDocumentationOutput(ToolOutput):
+    """Output of the read_documentation_url tool."""
+    url: str = Field(
+        description="The URL that was fetched."
+    )
+    content: Optional[str] = Field(
+        default=None,
+        description="Extracted plain text from the documentation page. Null on ERR.",
+    )
+    char_count: int = Field(
+        default=0,
+        description="Number of characters in the extracted content.",
+    )
+ 
+ 
+class SchemaField(BaseModel):
+    """Single inferred field from analyze_json_schema."""
+    api_field: str = Field(description="Dot-notation path in the JSON response")
+    type: str       = Field(description="Inferred BigQuery type")
+    sample: str     = Field(description="Sample value (truncated to 60 chars)")
+ 
+ 
+class AnalyzeJsonSchemaOutput(ToolOutput):
+    """Output of the analyze_json_schema tool."""
+    fields: List[SchemaField] = Field(
+        default_factory=list,
+        description="All inferred fields with their BigQuery types and sample values.",
+    )
+    field_count: int = Field(
+        default=0,
+        description="Total number of fields detected.",
+    )
+
+# ============================================================
+# Software Engineer Tools
+# ============================================================
 
 
 class ConnectorRef(BaseModel):
@@ -221,6 +282,7 @@ class ConnectorExecuteToolOutput(ToolOutput):
     result: ConnectorRunResult = Field(
         description="Normalized runtime result from connector execution.",
     )
+
 
 
 # ============================================================
