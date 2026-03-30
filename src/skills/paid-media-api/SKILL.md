@@ -5,8 +5,12 @@ description: "API Investigator Agent (Data Sourcer). Specializes in researching 
 
 # Paid Media API Skill — Read-Only Data Extraction
 
-Extracts the minimum information needed for a downstream Data Modeler to define a BigQuery RAW schema.
-Scope: **authentication**, **reporting endpoints**, **available fields**, **pagination**, **rate limits**.
+Extracts a **complete field catalog** for the platform plus the minimum infrastructure
+metadata (auth, endpoint, pagination, rate limits) needed by the Data Architect and
+Software Engineer downstream.
+
+Scope: **authentication**, **reporting endpoint**, **all available fields with categories,
+canonical matches, notes, and semantics**, **pagination**, **rate limits**.
 Never generates code to create, update, or delete campaigns or ads.
 
 ---
@@ -27,17 +31,12 @@ Is api_name in KNOWN PLATFORMS list?
   └── NO  → 1. search_web("{api_name} official API documentation")
              2. read_documentation_url(top result)
                 → extract: base_url, auth_method, reporting_endpoint,
-                  available_fields, pagination, rate_limits
-             3. analyze_json_schema(sample_response) → infer field types
+                  all available fields, pagination, rate_limits
+             3. analyze_json_schema(sample_response) if JSON available
              4. Go to → EXTRACT FIELDS
 
-EXTRACT FIELDS
-  → identify which fields map to:
-    impressions, clicks, spend, ctr, conversions,
-    video_views, reach, date, campaign_name, platform_id
+EXTRACT FIELDS (see rules below)
   → Go to → OUTPUT
-
-OUTPUT → return Investigation Report (see format below)
 ```
 
 ---
@@ -87,95 +86,136 @@ advertiser_id: passed as query param, NOT in URL path
 
 ## 📡 REPORTING ENDPOINTS (read-only)
 
-### Meta — Performance
-
+### Meta
 ```
-Endpoint: GET /{account_id}/insights
+Primary endpoint: GET /{account_id}/insights
 Level:    campaign + ad
 Lookback: 7 days rolling
 Granularity: date_start (day)
-
-Key fields:
-  impressions, link_click_default_uas (clicks), spend, reach,
-  video_p25/50/75/100_watched_default_uas, video_30_sec_watched_default_uas
-
-⚠️ ALL numeric fields arrive as STRINGS from the API — always cast before loading to BQ.
+⚠️ ALL numeric fields arrive as STRINGS — always cast before loading to BQ.
+⚠️ CTR is not a direct field — derive as DERIVED(clicks/impressions).
+⚠️ Conversions come from the same endpoint via the action_type array.
 ```
 
-### Google Ads — Performance
-
+### Google Ads
 ```
-Method:   ga_service.search_stream(customer_id, query)
+Primary endpoint: ga_service.search_stream(customer_id, query)
 Resource: ad_group_ad with metrics.* and segments.date
 Lookback: 7 days rolling
-Granularity: segments.date (required for daily rows)
-
-Example GAQL:
-  SELECT campaign.id, ad_group_ad.ad.id, segments.date,
-    metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.ctr,
-    metrics.video_views, metrics.video_quartile_p25_rate,
-    metrics.video_quartile_p100_rate
-  FROM ad_group_ad
-  WHERE segments.date DURING LAST_7_DAYS
-
-⚠️ cost_micros: always divide by 1,000,000 — never store raw micros in BQ.
-⚠️ video_quartile_p*_rate: these are RATES (0.0–1.0), not counts.
-⚠️ IDs (campaign, ad group, ad) are returned as int64 — cast to STRING.
-⚠️ Without segments.date, metrics aggregate across the full date range.
+Granularity: segments.date (required for daily rows — omitting it aggregates everything)
+⚠️ cost_micros: always divide by 1,000,000 — never store raw micros.
+⚠️ video_quartile_p*_rate: RATES (0.0–1.0), not counts.
+⚠️ IDs (campaign, ad group, ad) are int64 — cast to STRING.
+⚠️ metrics.conversions = primary actions only.
+⚠️ metrics.all_conversions = everything including view-through and secondary actions.
 ```
 
-### TikTok — Performance
-
+### TikTok
 ```
-Endpoint: GET /report/integrated/get/
-report_type: BASIC
+Primary endpoint: GET /report/integrated/get/  (report_type: BASIC)
 Lookback: 7 days rolling
 Granularity: stat_time_day
-
-Request params:
-  advertiser_id (query param), report_type, dimensions, metrics, start_date, end_date, page_size
-
-Key metrics:
-  spend, impressions, clicks, reach, ctr, cpc, cpm,
-  video_play_actions, video_watched_2s/6s,
-  video_views_p25/50/75/100
-
 ⚠️ spend is already in currency units (NOT micros) — do NOT divide.
 ⚠️ ctr is a PERCENTAGE (5.2 = 5.2%), not a ratio — normalize for cross-platform.
 ⚠️ video_views_p* are ABSOLUTE COUNTS (opposite of Google Ads rates).
 ⚠️ stat_time_day includes time component (YYYY-MM-DD HH:MM:SS) — truncate to date.
 ⚠️ Max date range per request: 30 days — chunk for historical backfills.
+⚠️ Conversions are FLAT METRICS per type — NOT an action_type array like Meta.
+```
+
+---
+
+## 🗂️ EXTRACT FIELDS — Rules
+
+### Step 1 — Read ALL fields from the reference file
+Extract every field across ALL domains: structural + performance + conversions.
+Do not stop at 9. Typical output: 25-50 entries.
+
+### Step 2 — Map the 9 canonical metrics
+Always attempt to map these, in this order:
+
+| # | Canonical key  | Meta                              | Google Ads                     | TikTok              |
+|---|----------------|-----------------------------------|--------------------------------|---------------------|
+| 1 | impressions    | impressions                       | metrics.impressions            | impressions         |
+| 2 | clicks         | link_click_default_uas            | metrics.clicks                 | clicks              |
+| 3 | spend          | spend                             | metrics.cost_micros ÷ 1e6      | spend               |
+| 4 | ctr            | DERIVED(clicks/impressions)       | metrics.ctr                    | ctr                 |
+| 5 | conversions    | conversions                       | metrics.conversions            | conversion          |
+| 6 | video_views    | video_p100_watched_default_uas    | metrics.video_views            | video_play_actions  |
+| 7 | reach          | reach                             | metrics.impressions_reach      | reach               |
+| 8 | campaign_name  | campaign_name                     | campaign.name                  | campaign_name       |
+| 9 | date           | date_start                        | segments.date                  | stat_time_day       |
+
+If a platform does not expose a canonical metric, include it with api_field="NOT_AVAILABLE".
+Only ONE field per platform may claim each canonical key.
+
+### Step 3 — Add all remaining fields
+Include at minimum (when available):
+- Structural: campaign_id, adset_id, ad_id, campaign_status, campaign_objective, ad_type, currency
+- Extended performance: cpc, cpm, frequency, avg_cpc
+- Video quartiles: p25, p50, p75, p100 (note whether rates or counts)
+- Conversion breakdowns: purchase, lead, add_to_cart, app_install, all_conversions,
+  view-through, conversion_value, per-attribution-window variants
+- Cost sub-types: budget, bid_price
+
+### Step 4 — Populate per-field metadata
+
+| Attribute        | Rule |
+|------------------|------|
+| `api_field`      | Exact name from API/docs. Dot notation for nested. DERIVED(formula) if calculated. |
+| `label`          | Verbatim from docs or JSON — do NOT normalize spelling. |
+| `type`           | FLOAT64 \| INTEGER \| STRING \| TIMESTAMP \| DATE \| BOOLEAN |
+| `category`       | structural \| performance \| conversion \| other |
+| `canonical_match`| One of the 9 keys, or null. One field per platform per canonical key. |
+| `note`           | Required for any cast, division, format, or normalization quirk. |
+| `semantics`      | Required for canonical_match="conversions". Also required for CTR, spend, all_conversions, and any metric that counts differently across platforms. |
+
+### Step 5 — Order the list
+1. The 9 canonical fields first (in canonical order), even if api_field="NOT_AVAILABLE".
+2. Remaining fields: structural → performance → conversion → other, then alpha by label.
+
+### Step 6 — Set discovery metadata
+```
+total_fields_discovered = len(available_fields)
+canonical_fields_found  = count of entries with canonical_match != null
+discovery_method        = "docs_only" | "json_schema" | "docs_and_schema"
 ```
 
 ---
 
 ## ⚡ RATE LIMITS
 
-| Platform | Limit | Notes |
-|---|---|---|
-| Meta | cursor-based pagination | iterate `after` cursor until `next` is absent |
-| Google Ads | ~15,000 queries/day | use `search_stream` — handles pagination automatically |
-| TikTok | 10 req/sec · 60 req/min (reporting) | max 30-day range; max page_size 1,000 |
+| Platform    | Limit                           | Pagination                                           |
+|-------------|---------------------------------|------------------------------------------------------|
+| Meta        | No hard per-minute limit        | Cursor-based — iterate paging.cursors.after          |
+| Google Ads  | ~15,000 queries/day             | search_stream handles automatically                  |
+| TikTok      | 10 req/sec · 60 req/min         | Page-based — increment page until page >= total_page |
 
 ---
 
 ## 🚨 CROSS-PLATFORM GOTCHAS
 
-| Issue | Meta | Google Ads | TikTok |
-|---|---|---|---|
-| Numeric fields as strings | ✅ Yes — cast everything | ❌ Native types | ❌ Mostly native |
-| Spend unit | Float (currency) | **Micros ÷ 1,000,000** | Float (currency, NOT micros) |
-| CTR format | Ratio (0.05 = 5%) | Ratio | **Percentage (5.2 = 5.2%)** |
-| Video quartiles | % watched counts | **Rates 0.0–1.0** | Absolute counts |
-| IDs type | String | **int64 → cast to STRING** | String |
-| API access | REST (curl-able) | **Python SDK only** | REST (curl-able) |
-| Conversions structure | `action_type` array | Segments per conversion action | **Flat metrics (no array)** |
+| Issue               | Meta                          | Google Ads                  | TikTok                        |
+|---------------------|-------------------------------|-----------------------------|-------------------------------|
+| Numeric as strings  | ✅ Yes — cast everything      | ❌ Native types             | ❌ Mostly native              |
+| Spend unit          | Float (currency)              | **Micros ÷ 1,000,000**      | Float (currency, NOT micros)  |
+| CTR format          | **Derived** (no direct field) | Ratio (0.05 = 5%)           | **Percentage (5.2 = 5.2%)**   |
+| Video quartiles     | Counts                        | **Rates 0.0–1.0**           | Counts                        |
+| IDs type            | String                        | **int64 → cast to STRING**  | String                        |
+| API access          | REST                          | **Python SDK only**         | REST                          |
+| Conversions shape   | action_type array             | Segments per action         | **Flat metrics per type**     |
 
 ---
 
-## 📤 OUTPUT — Investigation Report
+## 📤 OUTPUT FORMAT
 
-Return this JSON to the Coordinator after every investigation:
+The full `APIResearcherLOL` JSON. Key points:
+- `available_fields` is the complete catalog — not limited to 9 entries.
+- `semantics` must be populated for every conversion field and for CTR/spend where behavior differs across platforms.
+- `total_fields_discovered`, `canonical_fields_found`, `discovery_method` must always be set.
+- `summary` must state: platform, action, total fields, canonical coverage (X/9), key gotchas, freshness result.
+
+Abbreviated example (Meta, canonical fields only for brevity):
 
 ```json
 {
@@ -188,33 +228,107 @@ Return this JSON to the Coordinator after every investigation:
   },
   "reporting_endpoint": "GET https://graph.facebook.com/v21.0/{act_id}/insights",
   "available_fields": [
-    { "name": "impressions",   "type": "FLOAT64", "api_field": "impressions",              "note": "API returns STRING — cast to numeric" },
-    { "name": "clicks",        "type": "FLOAT64", "api_field": "link_click_default_uas",   "note": "API returns STRING" },
-    { "name": "spend",         "type": "FLOAT64", "api_field": "spend",                    "note": "API returns STRING — cast to float" },
-    { "name": "ctr",           "type": "FLOAT64", "api_field": "DERIVED(clicks/impressions)", "note": "Not a direct field — derive or calculate" },
-    { "name": "reach",         "type": "FLOAT64", "api_field": "reach",                    "note": "API returns STRING" },
-    { "name": "conversions",   "type": "FLOAT64", "api_field": "conversions",              "note": "Generic total conversions" },
-    { "name": "video_views",   "type": "FLOAT64", "api_field": "video_play_actions",       "note": "Use video_p100_watched for completions" },
-    { "name": "campaign_name", "type": "STRING",  "api_field": "campaign_name",            "note": "" },
-    { "name": "date",          "type": "TIMESTAMP","api_field": "date_start",              "note": "Format: YYYY-MM-DD" }
+    {
+      "api_field": "impressions",
+      "label": "impressions",
+      "type": "FLOAT64",
+      "category": "performance",
+      "canonical_match": "impressions",
+      "note": "API returns STRING — cast to FLOAT64",
+      "semantics": null
+    },
+    {
+      "api_field": "link_click_default_uas",
+      "label": "link_click_default_uas",
+      "type": "FLOAT64",
+      "category": "performance",
+      "canonical_match": "clicks",
+      "note": "API returns STRING — cast to FLOAT64",
+      "semantics": null
+    },
+    {
+      "api_field": "spend",
+      "label": "spend",
+      "type": "FLOAT64",
+      "category": "performance",
+      "canonical_match": "spend",
+      "note": "API returns STRING — cast to FLOAT64",
+      "semantics": "Total spend in account currency. Includes all fees."
+    },
+    {
+      "api_field": "DERIVED(link_click_default_uas / impressions)",
+      "label": "ctr",
+      "type": "FLOAT64",
+      "category": "performance",
+      "canonical_match": "ctr",
+      "note": "Not a direct field — calculate as clicks / impressions. Result is a ratio (0.05 = 5%).",
+      "semantics": "Meta does not expose CTR directly — must be derived. Result is a ratio, unlike TikTok which returns a percentage."
+    },
+    {
+      "api_field": "conversions",
+      "label": "conversions",
+      "type": "FLOAT64",
+      "category": "conversion",
+      "canonical_match": "conversions",
+      "note": "API returns STRING — cast to FLOAT64",
+      "semantics": "Total conversions across all action types and attribution windows combined. For per-type or per-window breakdown, use the action_type array fields."
+    },
+    {
+      "api_field": "video_p100_watched_default_uas",
+      "label": "video_p100_watched_default_uas",
+      "type": "FLOAT64",
+      "category": "performance",
+      "canonical_match": "video_views",
+      "note": null,
+      "semantics": "100% video completions. Use video_play_actions for total plays including partial views."
+    },
+    {
+      "api_field": "reach",
+      "label": "reach",
+      "type": "FLOAT64",
+      "category": "performance",
+      "canonical_match": "reach",
+      "note": "API returns STRING — cast to FLOAT64",
+      "semantics": null
+    },
+    {
+      "api_field": "campaign_name",
+      "label": "campaign_name",
+      "type": "STRING",
+      "category": "structural",
+      "canonical_match": "campaign_name",
+      "note": null,
+      "semantics": null
+    },
+    {
+      "api_field": "date_start",
+      "label": "date_start",
+      "type": "TIMESTAMP",
+      "category": "other",
+      "canonical_match": "date",
+      "note": "Format: YYYY-MM-DD",
+      "semantics": null
+    }
+    // ... all remaining non-canonical fields follow, grouped by category
   ],
-  "pagination": "cursor-based — iterate paging.after until paging.next is absent",
-  "rate_limit": "no hard per-minute limit; async recommended for date ranges >7 days",
+  "total_fields_discovered": 34,
+  "canonical_fields_found": 9,
+  "discovery_method": "docs_only",
+  "pagination": "cursor-based — iterate paging.cursors.after until paging.next is absent",
+  "rate_limit": "no hard per-minute limit; async recommended for date ranges > 7 days",
   "freshness_check": {
     "checked": true,
     "changes_detected": false,
     "delta": null
-  }
+  },
+  "missing_inputs": [],
+  "summary": "Meta Marketing API investigated via freshness check. 34 fields catalogued (9/9 canonical metrics mapped). All numeric fields arrive as strings and must be cast before BQ load; CTR must be derived as there is no direct field. The conversions field is an aggregate across all action types and windows — per-type breakdown requires separate action_type array fields. No changes detected in live documentation."
 }
 ```
-
-This JSON is the handoff to the Data Modeler agent → `proponer_esquema_bq`.
 
 ---
 
 ## 📂 Reference Files
-
-Load only the file relevant to the current platform:
 
 - `references/meta.md` — full field tables (Structural + Performance + Conversions), pagination, all gotchas
 - `references/google-ads.md` — GAQL fields, micros handling, video rates, conversion segments, gotchas
