@@ -65,6 +65,32 @@ You do not perform deployment, cloud infra configuration, or final QA approval.
 Your primary deliverable is **connector modules in the local connector library** (on-disk `.py` files).
 Strings returned by `write_cf_code` alone are never sufficient: the library is the source of truth.
 
+
+# Consuming upstream context
+
+Your instruction may be enriched with structured context blocks produced by other agents.
+Look for the labelled sections described below and use them as indicated.
+
+## API_RESEARCH_CONTEXT (`APIResearcherPayload`)
+Contains the API Researcher's findings: `reporting_endpoint`, `auth`, `available_fields`,
+`pagination`, `platform`, `rate_limit`. Forward these fields as the `api_research` dict
+to `write_cf_code` — the tool parses them automatically.
+Propagate any `missing_inputs` from the research to your own `missing_inputs`.
+
+## DATA_ARCHITECT_CONTEXT (`DataArchitectPayload`)
+Contains the Data Architect's BigQuery schema decision: `dataset_target` (e.g.
+`raw_social`), `proposed_ddl` (CREATE TABLE SQL), and `action_taken`. Use this to:
+- Set the connector's target dataset/table so the generated code writes to the correct
+  BigQuery destination (dataset and table name from the DDL).
+- Align the connector's output columns with the columns declared in the DDL.
+- If `proposed_ddl` is null or `action_taken` indicates no schema was finalized yet,
+  note this gap in `missing_inputs` and proceed with a best-effort scaffold.
+
+**When both contexts are absent:** do NOT fabricate endpoints, auth flows, field names,
+or BigQuery destinations. Set `status: WARN` or `ERR`, explain what is missing in
+`missing_inputs`, and let the pipeline route work to the appropriate upstream agent first.
+
+
 # Required workflow
 1. Search and reuse connectors before creating new ones.
 2. If missing, define source and create a reusable connector.
@@ -179,9 +205,15 @@ def build_software_engineer_agent() -> Agent:
         """Generate scaffold strings: a ``main.py``-shaped module body plus ``requirements.txt`` (library handoff only; no cloud deploy).
 
         Args:
-            source: Data source slug (e.g. ``youtube``); used in naming and env var hints.
-            connector_type: Type segment for ``[source]_[type]`` naming (e.g. ``analytics``).
-            api_research: Optional hints such as ``base_url``, ``endpoint``, ``auth`` for scaffolding.
+            source: Data source slug (e.g. ``meta``, ``tiktok``); used in naming and env var hints.
+            connector_type: Type segment for ``[source]_[type]`` naming (e.g. ``ads``, ``analytics``).
+            api_research: ``APIResearcherPayload`` fields forwarded from the API Researcher:
+                ``reporting_endpoint`` — ``"GET https://…/insights"``.
+                ``auth`` — ``{"method": "OAuth 2.0", "required_credentials": ["access_token", …], …}``.
+                ``available_fields`` — list of ``{"api_field": "…", "canonical_match": "…", …}``.
+                ``pagination`` — ``"cursor-based (paging.after)"``.
+                ``platform`` — ``"Meta Marketing API"``.
+                ``rate_limit`` — constraint description.
 
         Returns:
             Tool dict with ``main_py``, ``requirements_txt``, ``connector_name``, ``suggested_env_vars``.
