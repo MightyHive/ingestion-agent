@@ -9,7 +9,7 @@ description: Manage the local connector library (Python modules); no cloud deplo
 
 Use this skill when requests involve:
 - Listing available connectors.
-- Reading an existing connector’s source.
+- Reading an existing connector's source.
 - Creating or updating connectors for external APIs/data sources.
 - Using approved templates and generating connector source strings (may resemble a CF `main.py` layout).
 
@@ -26,7 +26,7 @@ Use this skill when requests involve:
   patterns agreed with the platform).
 - Use `identify_environment_variables` and populate `env_vars_required` / `required_secrets` with **names only**.
 - Explain in `summary` that values must be configured in the **runtime environment** (Secret Manager, CI secrets,
-  etc.)—outside this agent’s tools.
+  etc.)—outside this agent's tools.
 - Never hardcode keys, tokens, or passwords in saved connectors.
 
 ## Workflow
@@ -42,7 +42,7 @@ Use this skill when requests involve:
    - Generate a reusable connector with top-level `fetch(params, context)`.
    - Connector implementation must read requested columns/metrics from `params["fields"]`.
    - Use `write_cf_code` for scaffolding strings only, then **`validate_connector_code` → `save_connector`**.
-   - **Persistence is mandatory:** you must not treat generated code as “done” until `save_connector` succeeds.
+   - **Persistence is mandatory:** you must not treat generated code as "done" until `save_connector` succeeds.
    - Set `overwrite=True` only for explicit updates.
 5. If user selects specific columns/metrics, use `modify_payload_and_columns` on template code, then again
    **`validate_connector_code` → `save_connector`** on the final source.
@@ -77,20 +77,44 @@ Use this skill when requests involve:
 
 ## Upstream: API Researcher Agent (Data Sourcer)
 
-Technical discovery for a **new** external system is **not** this component’s job. Another subagent owns that work:
+Technical discovery for a **new** external system is **not** this component's job. The **API Researcher** agent owns that work and produces an `APIResearcherPayload` with everything needed to build a connector.
 
 | Responsibility | API Researcher Agent | Software Engineer (this skill) |
 |----------------|---------------------|--------------------------------|
-| Find official docs, recent behavior | `search_on_web` | — |
-| Read pages: endpoints, auth, pagination | `read_documentation` | — |
+| Find official docs, recent behavior | `search_web` | — |
+| Read pages: endpoints, auth, pagination | `read_documentation_url` | — |
 | Infer shapes from JSON | `analyze_json_schema` | — |
+| Deliver structured research payload | `APIResearcherPayload` output | consumes as `api_research` |
 | Implement `fetch`, validate, save to library | — | tools in this skill |
 
-**Rules:**
+### `APIResearcherPayload` fields you consume
+
+When the coordinator or instruction includes API research results, expect these fields:
+
+| Field                  | Type                | What it tells you                                                      |
+|------------------------|---------------------|------------------------------------------------------------------------|
+| `platform`             | `str`               | Display name (e.g. "Meta Marketing API") — use as `source` slug        |
+| `reporting_endpoint`   | `str`               | `"METHOD URL"` or SDK description — pass to `write_cf_code`            |
+| `auth`                 | `object`            | `method`, `required_credentials[]`, `token_type`, `expiry`             |
+| `auth.required_credentials` | `list[str]`   | Credential names → become env var names in the connector               |
+| `available_fields`     | `list[object]`      | Each has `api_field`, `label`, `type`, `category`, `canonical_match`   |
+| `pagination`           | `str`               | Strategy (e.g. "cursor-based (paging.after)")                          |
+| `rate_limit`           | `str`               | Key constraints for daily ingestion                                    |
+| `missing_inputs`       | `list[str]`         | Gaps from research — propagate to your own `missing_inputs`            |
+
+### How to use research data
+
+1. Build the `api_research` dict for `write_cf_code` by forwarding:
+   `reporting_endpoint`, `auth`, `available_fields`, `pagination`, `platform`, `rate_limit`.
+2. The tool parses them automatically: extracts URL, auth pattern, env vars from credentials, DEFAULT_FIELDS from canonical fields, and pagination logic.
+3. After scaffolding, use `modify_payload_and_columns` with `api_field` names from `available_fields` if the user selected specific fields.
+4. Always validate and save before claiming success.
+
+### Rules
 
 - Do **not** pretend you ran web research or fabricate endpoints, auth flows, or response shapes. If the orchestrator has not yet supplied research output, treat API details as **unknown**.
-- If you lack structured inputs (base URL, auth scheme, resource IDs, pagination, field names for `params["fields"]`), **do not guess**. Populate **`missing_inputs`** with a short, explicit list of what is needed (e.g. OAuth scopes, channel ID, report dimensions matching “views” and “revenue”).
-- When a coordinator hands off **research results** (often as `api_research` or equivalent context), use them to parameterize `write_cf_code` and to align `modify_payload_and_columns` / connector logic—still validate and save before claiming success.
+- If you lack structured inputs (endpoint URL, auth scheme, field names for `params["fields"]`), **do not guess**. Populate **`missing_inputs`** with a short, explicit list of what is needed.
+- When research results are present, use them to parameterize `write_cf_code` and to align `modify_payload_and_columns` / connector logic—still validate and save before claiming success.
 - If the user message alone is insufficient and no research payload is present, respond with **WARN** or **ERR**, a clear **summary** of what is missing, and **`missing_inputs`** so the pipeline can route work to the API Researcher Agent and return.
 
 ## Tool-specific rules (high-value tools)
@@ -108,7 +132,7 @@ Technical discovery for a **new** external system is **not** this component’s 
 ### `write_cf_code`
 - Use when no approved template is available or when a fresh connector is requested.
 - Enforce naming `[source]_[type]` and `fetch(params, context)` contract.
-- Pass **`api_research`** only when upstream (API Researcher or user) supplied concrete hints (`base_url`, `endpoint`, `auth`, etc.). If those are absent, prefer listing gaps in **`missing_inputs`** over inventing URLs or auth.
+- Pass **`api_research`** with the full `APIResearcherPayload` fields when upstream research is available (`reporting_endpoint`, `auth`, `available_fields`, `pagination`, `platform`, `rate_limit`). If those are absent, prefer listing gaps in **`missing_inputs`** over inventing URLs or auth.
 - Generated code must rely on `params["fields"]` and avoid hardcoded credentials.
 - Always follow with `validate_connector_code`, then `save_connector`.
 
