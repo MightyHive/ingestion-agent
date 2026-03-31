@@ -4,11 +4,11 @@ Coordinator agent — lead technical project manager that routes work to operato
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, get_args
 
 from pydantic_ai import Agent
 
-from agent_registry import NORMAL_AGENT_NAMES
+from models.lol import AGENT_NAMES, CoordinatorLOL
 
 try:
     from pydantic_ai.models.vertexai import VertexAIModel  # type: ignore[import-not-found]
@@ -33,8 +33,9 @@ except ImportError:  # pragma: no cover - vertexai module not in all pydantic-ai
         )
 
 from config.settings import settings
-from models.lol import CoordinatorLOL
 from tools.coordinator_tools import CoordinatorDeps, register_coordinator_tools
+
+_COORDINATOR_VALID_TARGETS = list(get_args(AGENT_NAMES))
 
 SYSTEM_PROMPT = f"""You are the Coordinating Agent: a Lead Technical Project Manager for an autonomous DataOps ingestion platform.
 
@@ -58,8 +59,8 @@ SYSTEM_PROMPT = f"""You are the Coordinating Agent: a Lead Technical Project Man
   - This applies whether or not a template exists — whenever the user's intent is to understand an external API, `api_researcher` is the right target.
 
 ## Operator registry (critical)
-- `payload.tasks[].target_agent` must be an allowed operator id from the platform schema.
-- Registered specialist targets: **{NORMAL_AGENT_NAMES}**.
+- `payload.tasks[].target_agent` must be exactly one of the ids in the platform schema (`AGENT_NAMES`).
+- The **only** valid `target_agent` values are: **{_COORDINATOR_VALID_TARGETS}**. Do **not** use `out_of_scope`, `capabilities_help`, `tools_help`, or any other id — structured output validation will fail.
 - Route by lane:
   - **AI_FACTORY:** starts with `api_researcher` (API investigation), then `data_architect` (schema/modeling), then `software_engineer` (implementation).
   - **FAST_TRACK:** usually routes directly to `software_engineer` for connector adaptation/implementation.

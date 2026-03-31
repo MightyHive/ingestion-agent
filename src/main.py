@@ -326,7 +326,7 @@ async def _run_specialist_node(
     if not instruction:
         return {}
 
-    if not is_observability_enabled():
+    if settings.RUN_MODE == "cli" and not is_observability_enabled():
         print(minimal_trace_message)
     log_agent_start(display_name, instruction=instruction)
     started = time.perf_counter()
@@ -383,10 +383,11 @@ def prepare_new_turn(state: AgentGraphState) -> dict:
 
 async def coordinator_node(state: AgentGraphState) -> dict:
     """Call the Coordinator PydanticAI agent and build dispatch targets."""
-    if is_observability_enabled():
-        print()
-    else:
-        print("\n   🧠 [Coordinator planning...]")
+    if settings.RUN_MODE == "cli":
+        if is_observability_enabled():
+            print()
+        else:
+            print("\n   🧠 [Coordinator planning...]")
     log_agent_start("Coordinator")
     started = time.perf_counter()
 
@@ -622,7 +623,7 @@ async def software_engineer_node(state: AgentGraphState) -> dict:
 
 def out_of_scope_node(state: AgentGraphState) -> dict:
     """Guardrail: request outside scope. Add: copy and rules for your domain."""
-    if not is_observability_enabled():
+    if settings.RUN_MODE == "cli" and not is_observability_enabled():
         print("   🚫 [Guardrail: request out of scope]")
     log_console("agent", "start", "Guardrail out_of_scope")
     lol = {
@@ -641,7 +642,7 @@ def out_of_scope_node(state: AgentGraphState) -> dict:
 
 def capabilities_help_node(state: AgentGraphState) -> dict:
     """Add: help text matching your real agents and tools."""
-    if not is_observability_enabled():
+    if settings.RUN_MODE == "cli" and not is_observability_enabled():
         print("   📖 [Help manual activated]")
     log_console("agent", "start", "Help manual")
     help_text = (
@@ -666,7 +667,7 @@ def coordinator_failure_node(state: AgentGraphState) -> dict:
 
 async def synthesizer_node(state: AgentGraphState) -> dict:
     """Produce the final Markdown answer via the Synthesizer PydanticAI agent."""
-    if not is_observability_enabled():
+    if settings.RUN_MODE == "cli" and not is_observability_enabled():
         print("   ✍️  [Synthesizer drafting final response...]")
     log_agent_start("Synthesizer")
     started = time.perf_counter()

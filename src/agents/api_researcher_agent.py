@@ -11,6 +11,7 @@ from pydantic_ai.providers.google import GoogleProvider
 from pydantic_ai_skills import SkillsToolset  # pyright: ignore[reportMissingImports]
 from config.settings import settings
 from models.lol import APIResearcherLOL
+from models.tool_outputs import dump_tool_output
 from observability import extract_usage, run_logged_tool
 from tools.api_researcher_tools import (
     _analyze_json_schema,
@@ -252,7 +253,7 @@ def build_api_researcher_agent() -> Agent:
         """
         return run_logged_tool(
             "api_researcher.search_web",
-            lambda: _search_web(query=query, max_results=max_results),
+            lambda: dump_tool_output(_search_web(query=query, max_results=max_results)),
             query=query,
         )
  
@@ -268,7 +269,7 @@ def build_api_researcher_agent() -> Agent:
         """
         return run_logged_tool(
             "api_researcher.read_documentation_url",
-            lambda: _read_documentation_url(url=url),
+            lambda: dump_tool_output(_read_documentation_url(url=url)),
             url=url,
         )
  
@@ -284,7 +285,7 @@ def build_api_researcher_agent() -> Agent:
         """
         return run_logged_tool(
             "api_researcher.analyze_json_schema",
-            lambda: _analyze_json_schema(json_str=json_str),
+            lambda: dump_tool_output(_analyze_json_schema(json_str=json_str)),
         )
  
     return agent
