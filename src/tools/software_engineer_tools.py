@@ -500,12 +500,80 @@ def _modify_payload_and_columns(template_code: str, fields: List[str]) -> Dict[s
     )
 
 
+def _parse_api_research(api_research: Dict[str, Any] | None, source_name: str) -> Dict[str, Any]:
+    """Extract scaffold hints from an ``APIResearcherPayload``-shaped dict."""
+    ctx = api_research or {}
+
+    # ── Endpoint ──────────────────────────────────────────────────────────────
+    reporting_endpoint = str(ctx.get("reporting_endpoint", "")).strip()
+    http_method = "GET"
+    base_url = ""
+
+    if reporting_endpoint:
+        parts = reporting_endpoint.split(None, 1)
+        if len(parts) == 2 and parts[0].upper() in {"GET", "POST", "PUT", "DELETE", "PATCH"}:
+            http_method = parts[0].upper()
+            base_url = parts[1].strip()
+        else:
+            base_url = reporting_endpoint
+
+    # ── Auth ──────────────────────────────────────────────────────────────────
+    auth_obj = ctx.get("auth") or {}
+    auth_method = str(auth_obj.get("method", "")).strip() if isinstance(auth_obj, dict) else ""
+    required_credentials = [
+        str(c).strip()
+        for c in (auth_obj.get("required_credentials", []) if isinstance(auth_obj, dict) else [])
+        if str(c).strip()
+    ]
+
+    env_vars: List[str] = [
+        f"{source_name.upper()}_{_sanitize_segment(cred).upper()}"
+        for cred in required_credentials
+    ]
+    if not env_vars:
+        env_vars = [f"{source_name.upper()}_ACCESS_TOKEN"]
+
+    is_oauth = "oauth" in auth_method.lower()
+
+    # ── Fields ────────────────────────────────────────────────────────────────
+    canonical_api_fields: List[str] = []
+    for field in ctx.get("available_fields", []):
+        if not isinstance(field, dict) or not field.get("canonical_match"):
+            continue
+        api_field = str(field.get("api_field", "")).strip()
+        if api_field and api_field != "NOT_AVAILABLE" and not api_field.startswith("DERIVED"):
+            canonical_api_fields.append(api_field)
+
+    default_fields = canonical_api_fields or ["id"]
+
+    # ── Scalar hints ──────────────────────────────────────────────────────────
+    pagination_hint = str(ctx.get("pagination", "")).strip()
+    platform = str(ctx.get("platform", "")).strip()
+    rate_limit = str(ctx.get("rate_limit", "")).strip()
+
+    return {
+        "base_url": base_url,
+        "http_method": http_method,
+        "auth_method": auth_method,
+        "is_oauth": is_oauth,
+        "env_vars": env_vars,
+        "default_fields": default_fields,
+        "pagination_hint": pagination_hint,
+        "platform": platform,
+        "rate_limit": rate_limit,
+    }
+
+
 def _write_cf_code(
     source: str,
     connector_type: str,
     api_research: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    """Stub-generate ``main_py`` and ``requirements_txt`` for a requests-based HTTP connector."""
+    """Generate ``main_py`` + ``requirements_txt`` scaffold from API research context.
+
+    Expects the ``APIResearcherPayload`` shape: ``reporting_endpoint``,
+    ``auth`` object, ``available_fields``, ``pagination``, ``platform``, ``rate_limit``.
+    """
     source_name = _normalize_source(source)
     type_name = _sanitize_segment(connector_type)
     connector_name = _normalize_connector_name(f"{source_name}_{type_name}")
@@ -523,63 +591,129 @@ def _write_cf_code(
             )
         )
 
-    api_context = api_research or {}
-    endpoint = str(api_context.get("endpoint", "")).strip()
-    base_url = str(api_context.get("base_url", "")).strip()
-    auth_hint = str(api_context.get("auth", "bearer_token")).strip()
-    api_key_env = f"{source_name.upper()}_API_KEY"
+    r = _parse_api_research(api_research, source_name)
+    base_url: str = r["base_url"]
+    http_method: str = r["http_method"]
+    env_vars: List[str] = r["env_vars"]
+    default_fields: List[str] = r["default_fields"]
+    pagination_hint: str = r["pagination_hint"]
+    platform: str = r["platform"]
+    rate_limit: str = r["rate_limit"]
+    is_oauth: bool = r["is_oauth"]
+    auth_method: str = r["auth_method"]
+
+    primary_token_env = env_vars[0]
+    fields_repr = repr(default_fields)
+
+    # ── Build header block ────────────────────────────────────────────────────
+    header_comment = f'"""{source_name}_{type_name} connector'
+    if platform:
+        header_comment += f" — {platform}"
+    header_comment += '.\n\nAuto-scaffolded from API research.'
+    if pagination_hint:
+        header_comment += f"\nPagination: {pagination_hint}"
+    if rate_limit:
+        header_comment += f"\nRate limit: {rate_limit}"
+    if auth_method:
+        header_comment += f"\nAuth: {auth_method}"
+    header_comment += '\n"""'
+
+    # ── Build auth block ──────────────────────────────────────────────────────
+    token_load_lines = "\n".join(
+        f'    {_sanitize_segment(v).lower()} = os.getenv("{v}")'
+        for v in env_vars
+    )
+    missing_check_cond = " or ".join(
+        f"not {_sanitize_segment(v).lower()}" for v in env_vars
+    )
+    missing_names = ", ".join(env_vars)
+
+    if is_oauth:
+        auth_header_line = f'        "Authorization": f"Bearer {{{_sanitize_segment(env_vars[0]).lower()}}}",'
+    else:
+        auth_header_line = f'        "Authorization": f"Bearer {{{_sanitize_segment(env_vars[0]).lower()}}}",'
+
+    # ── Build URL line ────────────────────────────────────────────────────────
+    if base_url:
+        url_line = f'    url = "{base_url}"'
+    else:
+        url_line = f'    url = context.get("base_url", "")'
+
+    # ── Build request line ────────────────────────────────────────────────────
+    if http_method == "POST":
+        request_line = "    response = requests.post(url, headers=headers, json=query, timeout=60)"
+    else:
+        request_line = "    response = requests.get(url, headers=headers, params=query, timeout=60)"
+
+    # ── Pagination cursor block ───────────────────────────────────────────────
+    pagination_lower = pagination_hint.lower()
+    if "cursor" in pagination_lower:
+        cursor_extract = '    next_cursor = None\n'
+        cursor_extract += '    if isinstance(body, dict):\n'
+        cursor_extract += '        paging = body.get("paging", {})\n'
+        cursor_extract += '        cursors = paging.get("cursors", {}) if isinstance(paging, dict) else {}\n'
+        cursor_extract += '        next_cursor = cursors.get("after") or body.get("next_cursor")'
+    elif "page" in pagination_lower:
+        cursor_extract = '    next_cursor = None\n'
+        cursor_extract += '    if isinstance(body, dict):\n'
+        cursor_extract += '        page_info = body.get("page_info", body.get("paging", {}))\n'
+        cursor_extract += '        if isinstance(page_info, dict) and page_info.get("has_more", False):\n'
+        cursor_extract += '            next_cursor = str(int(params.get("cursor", "1")) + 1)'
+    else:
+        cursor_extract = '    next_cursor = body.get("next_cursor") if isinstance(body, dict) else None'
 
     main_py = (
+        f"{header_comment}\n\n"
         "from __future__ import annotations\n\n"
         "import os\n"
         "from typing import Any\n\n"
-        "import requests\n\n"
-        "DEFAULT_FIELDS = [\"id\"]\n\n"
+        "import requests\n\n\n"
+        f"DEFAULT_FIELDS = {fields_repr}\n\n\n"
         "def fetch(params: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:\n"
-        "    requested_fields = params.get(\"fields\", DEFAULT_FIELDS)\n"
+        '    requested_fields = params.get("fields", DEFAULT_FIELDS)\n'
         "    if not isinstance(requested_fields, list) or not requested_fields:\n"
         "        return {\n"
-        "            \"status\": \"ERR\",\n"
-        "            \"code\": \"FIELDS_REQUIRED\",\n"
-        "            \"records\": [],\n"
-        "            \"errors\": [\"params.fields must be a non-empty list\"],\n"
+        '            "status": "ERR",\n'
+        '            "code": "FIELDS_REQUIRED",\n'
+        '            "records": [],\n'
+        '            "errors": ["params.fields must be a non-empty list"],\n'
         "        }\n\n"
-        f"    api_key = os.getenv(\"{api_key_env}\")\n"
-        "    if not api_key:\n"
+        f"{token_load_lines}\n"
+        f"    if {missing_check_cond}:\n"
         "        return {\n"
-        "            \"status\": \"ERR\",\n"
-        "            \"code\": \"MISSING_API_KEY\",\n"
-        "            \"records\": [],\n"
-        "            \"errors\": [\"Missing required API key environment variable\"],\n"
+        '            "status": "ERR",\n'
+        '            "code": "MISSING_CREDENTIALS",\n'
+        '            "records": [],\n'
+        f'            "errors": ["Missing required env vars: {missing_names}"],\n'
         "        }\n\n"
         "    headers = {\n"
-        f"        \"Authorization\": f\"Bearer {{api_key}}\" if \"{auth_hint}\" else api_key,\n"
+        f"{auth_header_line}\n"
         "    }\n"
         "    query = {\n"
-        "        \"fields\": \",\".join(requested_fields),\n"
+        '        "fields": ",".join(requested_fields),\n'
         "    }\n"
-        "    cursor = params.get(\"cursor\")\n"
+        '    cursor = params.get("cursor")\n'
         "    if cursor:\n"
-        "        query[\"cursor\"] = cursor\n\n"
-        f"    url = \"{base_url.rstrip('/')}/{endpoint.lstrip('/')}\" if \"{base_url}\" and \"{endpoint}\" else \"{base_url}\"\n"
-        "    response = requests.get(url, headers=headers, params=query, timeout=30)\n"
+        '        query["cursor"] = cursor\n\n'
+        f"{url_line}\n"
+        f"{request_line}\n"
         "    if response.status_code >= 400:\n"
         "        return {\n"
-        "            \"status\": \"ERR\",\n"
-        "            \"code\": \"UPSTREAM_HTTP_ERROR\",\n"
-        "            \"records\": [],\n"
-        "            \"errors\": [f\"HTTP {response.status_code}: {response.text[:300]}\"]\n"
+        '            "status": "ERR",\n'
+        '            "code": "UPSTREAM_HTTP_ERROR",\n'
+        '            "records": [],\n'
+        '            "errors": [f"HTTP {response.status_code}: {response.text[:300]}"],\n'
         "        }\n\n"
-        "    payload = response.json()\n"
-        "    records = payload.get(\"data\", []) if isinstance(payload, dict) else []\n"
-        "    next_cursor = payload.get(\"next_cursor\") if isinstance(payload, dict) else None\n"
+        "    body = response.json()\n"
+        '    records = body.get("data", []) if isinstance(body, dict) else []\n'
+        f"{cursor_extract}\n"
         "    return {\n"
-        "        \"status\": \"OK\",\n"
-        "        \"code\": \"FETCH_OK\",\n"
-        "        \"records\": records if isinstance(records, list) else [],\n"
-        "        \"next_cursor\": next_cursor,\n"
-        "        \"meta\": {\"requested_fields\": requested_fields},\n"
-        "        \"errors\": [],\n"
+        '        "status": "OK",\n'
+        '        "code": "FETCH_OK",\n'
+        '        "records": records if isinstance(records, list) else [],\n'
+        '        "next_cursor": next_cursor,\n'
+        '        "meta": {"requested_fields": requested_fields},\n'
+        '        "errors": [],\n'
         "    }\n"
     )
 
@@ -593,7 +727,7 @@ def _write_cf_code(
             source=source_name,
             main_py=main_py,
             requirements_txt=requirements_txt,
-            suggested_env_vars=[api_key_env],
+            suggested_env_vars=env_vars,
         )
     )
 

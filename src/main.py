@@ -544,6 +544,16 @@ async def data_architect_node(state: AgentGraphState) -> dict:
     )
 
 
+def _extract_event_payload(state: AgentGraphState, agent_id: str) -> str | None:
+    """Return the JSON-serialized payload of a successful LOL from ``agent_id`` in the event_bus."""
+    for event in state.get("event_bus", []):
+        if event.get("id") == agent_id and event.get("status") != "ERR":
+            payload = event.get("payload")
+            if payload:
+                return json.dumps(payload, default=str)
+    return None
+
+
 async def software_engineer_node(state: AgentGraphState) -> dict:
     """Invoke the Software Engineer agent and return a LOL event."""
 
@@ -579,6 +589,27 @@ async def software_engineer_node(state: AgentGraphState) -> dict:
             "summary": "Software engineer failed to process the request.",
         },
     ).payload.model_dump()
+
+    current = state.get("task_plan", {}).get("software_engineer", "")
+    if current:
+        research_json = _extract_event_payload(state, "api_researcher")
+        if research_json:
+            current = (
+                f"{current}\n\n"
+                f"API_RESEARCH_CONTEXT (APIResearcherPayload — forward to write_cf_code as api_research):\n"
+                f"{research_json}"
+            )
+
+        schema_json = _extract_event_payload(state, "data_architect")
+        if schema_json:
+            current = (
+                f"{current}\n\n"
+                f"DATA_ARCHITECT_CONTEXT (DataArchitectPayload — target dataset and DDL for the connector):\n"
+                f"{schema_json}"
+            )
+
+        state["task_plan"]["software_engineer"] = current
+
     return await _run_specialist_node(
         state,
         "software_engineer",
