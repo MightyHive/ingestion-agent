@@ -78,6 +78,12 @@ def extract_enrichment_from_events(events: List[Dict[str, Any]]) -> SynthesisEnr
         if not isinstance(ev, dict):
             continue
         payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
+        if ev.get("id") == "data_architect":
+            ads = payload.get("available_datasets")
+            if isinstance(ads, list):
+                for item in ads:
+                    if isinstance(item, dict) and item.get("dataset_name"):
+                        e.datasets.append(str(item["dataset_name"]))
         data = payload.get("data")
 
         dicts: List[dict] = []

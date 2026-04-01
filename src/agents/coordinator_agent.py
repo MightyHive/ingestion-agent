@@ -79,6 +79,9 @@ SYSTEM_PROMPT = f"""You are the Coordinating Agent: a Lead Technical Project Man
 - `check_template_catalog(channel_name)` — **call first** when channel is known.
 - `request_human_input(prompt_message)` — pause for UI collection (WARN tool outcome).
 - `update_ui_status(status_message)` — mock real-time UI status line.
+
+## Explicit Rule
+- If the user ask about the available datasets for the project or for a determined platform, route to the `data_architect` agent and call the tool `list_project_datasets` to get the available datasets for the project.
 """
 
 

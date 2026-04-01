@@ -14,9 +14,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import RunContext
-
+from config.settings import Settings
 from models.tool_outputs import ToolOutput, dump_tool_output
-
+from google.cloud import bigquery
 if TYPE_CHECKING:
     from pydantic_ai import Agent
 
@@ -37,28 +37,30 @@ class DataArchitectDeps:
 # Pure Python (mock implementations)
 # ---------------------------------------------------------------------------
 
-_MOCK_RAW_DATASETS = (
-    "raw_youtube",
-    "raw_tiktok",
-    "raw_meta_ads",
-    "raw_shopify",
-)
 
+def _list_project_datasets(project_id: str) -> ToolOutput:
+    """List all BigQuery datasets visible in the GCP project (mock until wired to the API)."""
 
-def _list_raw_datasets(project_id: str) -> ToolOutput:
-    """Return a mock inventory of Raw/Bronze-layer datasets for the project."""
+    BIGQUERY_CLIENT = bigquery.Client(project=Settings.PROJECT_ID_DATA) #cambiar luego 
+    datasets = [dataset.dataset_id for dataset in BIGQUERY_CLIENT.list_datasets()]
     payload = {
         "project_id": project_id,
-        "datasets": list(_MOCK_RAW_DATASETS),
-        "layer": "raw_bronze",
-        "naming_convention": "raw_{platform} - snake_case, no hyphens.",
-        "note": "Mock response: replace with BigQuery API listing when wired.",
+        "datasets": datasets,
+        "note": (
+            "Mock inventory of dataset names in this project. "
+            "Replace with google.cloud.bigquery.Client.list_datasets() (or equivalent) when wired."
+        ),
+        "naming_hint_for_raw_bronze": (
+            "For this pipeline stage, prefer a landing dataset name like raw_{platform_slug} "
+            "(snake_case). Choose an existing dataset from the list or propose a new raw_* name."
+        ),
     }
     return ToolOutput(
         status="OK",
-        code="RAW_DATASETS_LISTED",
+        code="PROJECT_DATASETS_LISTED",
         msg=json.dumps(payload),
     )
+
 
 # Map from APIResearcherFieldMapping.type → BigQuery DDL type
 _BQ_TYPE_MAP: dict[str, str] = {
@@ -284,9 +286,9 @@ def register_architect_tools(agent: Agent[Any, Any]) -> None:
     """Attach Data Architect tools to a PydanticAI Agent (mutates agent in place)."""
 
     @agent.tool
-    async def list_raw_datasets(ctx: RunContext[DataArchitectDeps]) -> dict[str, Any]:
-        """List Raw/Bronze datasets available (mock) for deps.project_id."""
-        out = _list_raw_datasets(ctx.deps.project_id)
+    async def list_project_datasets(ctx: RunContext[DataArchitectDeps]) -> dict[str, Any]:
+        """List all BigQuery datasets in the configured GCP project (mock until BigQuery is wired)."""
+        out = _list_project_datasets(ctx.deps.project_id)
         return dump_tool_output(out)
 
     @agent.tool

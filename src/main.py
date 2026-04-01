@@ -524,6 +524,7 @@ async def data_architect_node(state: AgentGraphState) -> dict:
         reason="Data architect failure.",
         payload={
             "action_taken": "error",
+            "available_datasets": [],
             "dataset_target": "",
             "table_name": None,
             "selected_fields": [],

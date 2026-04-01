@@ -332,6 +332,11 @@ class APIResearcherPayload(BaseModel):
             "For Google Ads: describe the SDK method, not a REST URL. "
             "When multiple endpoints exist, this is the main performance/insights endpoint")
     )
+    endpoint: str = Field(
+        description="Endpoint of the reporting endpoint."
+        "This is the endpoint for the Software Engineer to use for ingestion."
+        "Declare if its structural, perfomance or conversion endpoint. For some platform it could be only one endpoint in reprentation of all."
+    )
  
     # ── Field catalog ─────────────────────────────────────────────────────────
     available_fields: List[APIResearcherFieldMapping] = Field(
@@ -443,6 +448,13 @@ class BQSchemaField(BaseModel):
         )
     )
 
+class AvailableDatasets(BaseModel):
+    """One BigQuery dataset id in the GCP project (full inventory, not only raw_*)."""
+
+    dataset_name: str = Field(
+        description="BigQuery dataset name in the project (e.g. raw_meta_ads, analytics_core)."
+    )
+
 class DataArchitectPayload(BaseModel):
     proposed_ddl: Optional[str] = Field(
         default=None,
@@ -452,6 +464,13 @@ class DataArchitectPayload(BaseModel):
             "using BigQuery SQL. Omit or null if the turn only listed datasets or validated inputs without drafting DDL."
             "Null if the turn only listed datasets or no field were selected."
         ),
+    )
+    available_datasets: List[AvailableDatasets] = Field(
+        description=(
+            "All dataset names returned by list_project_datasets for this GCP project. "
+            "Populated when the agent lists inventory; UI may use this for a dropdown."
+        ),
+        default_factory=list,
     )
     dataset_target: str = Field(
         default="",
@@ -479,7 +498,7 @@ class DataArchitectPayload(BaseModel):
     action_taken: str = Field(
         description=(
             "Short machine-readable label for what this agent did in this turn, e.g. "
-            "'listed_raw_datasets', 'proposed_schema', 'awaiting_approval', "
+            "'listed_project_datasets', 'proposed_schema', 'awaiting_approval', "
             "'executed_ddl', 'rejected_unsafe_ddl', 'clarification_needed', 'error'."
         ),
     )
