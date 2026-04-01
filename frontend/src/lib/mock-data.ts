@@ -1,207 +1,314 @@
-export type KpiStatus = "ok" | "warn" | "error";
+// ── KPIs ─────────────────────────────────────────────────────────────────────
+
+export type KpiStatus = "ok" | "warn" | "error"
 
 export interface KpiMetric {
-  id: string;
-  label: string;
-  value: string | number;
-  unit?: string;
-  trend?: number; // positive = up, negative = down
-  status: KpiStatus;
+  id: string
+  label: string
+  value: string | number
+  unit?: string
+  sub?: string        // secondary text below the value
+  status: KpiStatus
+  trend?: number
 }
-
-export type AlertSeverity = "critical" | "warning" | "info";
-
-export interface Alert {
-  id: string;
-  severity: AlertSeverity;
-  source: string;
-  description: string;
-  timestamp: string;
-  cta?: string;
-}
-
-export interface QuickAction {
-  id: string;
-  label: string;
-  icon: string;
-}
-
-export type ApprovalType = "schema_change" | "connector" | "pipeline" | "selector";
-
-export interface PendingApproval {
-  id: string;
-  description: string;
-  type: ApprovalType;
-  timestamp: string;
-}
-
-export type ActivityType = "sync" | "deploy" | "schema" | "agent";
-export type ActivityStatus = "success" | "failed" | "running" | "pending";
-
-export interface ActivityEvent {
-  id: string;
-  type: ActivityType;
-  title: string;
-  timestamp: string;
-  status: ActivityStatus;
-}
-
-export type AgentTaskStatus = "running" | "completed" | "needs_review";
-
-export interface AgentTask {
-  id: string;
-  agent: string;
-  task: string;
-  status: AgentTaskStatus;
-}
-
-export type PipelineStatus = "active" | "paused" | "error" | "syncing";
-
-export interface Pipeline {
-  id: string;
-  name: string;
-  platform: string;
-  market: string;
-  status: PipelineStatus;
-  lastSync: string;
-  successRate: number;
-}
-
-export type ConnectorStatus = "healthy" | "degraded" | "down";
-
-export interface ConnectorHealth {
-  id: string;
-  name: string;
-  platform: string;
-  status: ConnectorStatus;
-  lastCheck: string;
-}
-
-// --- Mock data instances ---
 
 export const kpiMetrics: KpiMetric[] = [
-  { id: "kpi-1", label: "Active Pipelines", value: 24, status: "ok", trend: 2 },
-  { id: "kpi-2", label: "Syncs Today", value: 1847, status: "ok", trend: 12 },
-  { id: "kpi-3", label: "Avg Latency", value: "1.2", unit: "s", status: "warn", trend: -5 },
-  { id: "kpi-4", label: "Error Rate", value: "0.8", unit: "%", status: "ok", trend: -1 },
-  { id: "kpi-5", label: "Pending Approvals", value: 3, status: "warn", trend: 3 },
-  { id: "kpi-6", label: "Connector Health", value: "92", unit: "%", status: "ok", trend: 0 },
-];
+  {
+    id: "kpi-pipelines",
+    label: "Active Pipelines",
+    value: 4,
+    status: "ok",
+    trend: 1,
+    sub: "1 with error",
+  },
+  {
+    id: "kpi-last-sync",
+    label: "Last Successful Sync",
+    value: "3",
+    unit: "min",
+    status: "ok",
+    sub: "Google Ads US",
+  },
+  {
+    id: "kpi-tables",
+    label: "BigQuery Tables",
+    value: 7,
+    status: "ok",
+    sub: "2 created this week",
+  },
+  {
+    id: "kpi-tokens",
+    label: "Expiring Tokens",
+    value: 2,
+    status: "warn",
+    sub: "Within 7 days",
+  },
+  {
+    id: "kpi-connectors",
+    label: "Healthy Connectors",
+    value: "3/5",
+    status: "warn",
+    sub: "1 degraded · 1 down",
+  },
+]
+
+// ── Needs Attention ───────────────────────────────────────────────────────────
+
+export type AlertSeverity = "critical" | "warning" | "info"
+export type AlertType = "token_expiry" | "sync_failure" | "schema_drift" | "rate_limit" | "info"
+
+export interface Alert {
+  id: string
+  severity: AlertSeverity
+  type: AlertType
+  source: string
+  description: string
+  timestamp: string
+  cta?: string
+}
 
 export const alerts: Alert[] = [
   {
     id: "alert-1",
     severity: "critical",
-    source: "Google Ads — US",
-    description: "API token expired. Sync has been paused for 6 hours.",
-    timestamp: "2026-03-30T08:14:00Z",
-    cta: "Reconnect",
+    type: "token_expiry",
+    source: "Meta Ads — BR",
+    description: "OAuth token expires in 2 days. Syncs will be paused automatically.",
+    timestamp: "2026-03-30T08:00:00Z",
+    cta: "Renew token",
   },
   {
     id: "alert-2",
     severity: "warning",
+    type: "token_expiry",
+    source: "TikTok Ads — MX",
+    description: "OAuth token expires in 6 days.",
+    timestamp: "2026-03-30T08:00:00Z",
+    cta: "Renew token",
+  },
+  {
+    id: "alert-3",
+    severity: "critical",
+    type: "sync_failure",
     source: "Meta Ads — BR",
-    description: "Schema drift detected in `campaigns` table. 2 new fields.",
+    description: "Sync failed 3 times in a row. Last attempt 2h ago.",
+    timestamp: "2026-03-30T06:00:00Z",
+    cta: "View logs",
+  },
+  {
+    id: "alert-4",
+    severity: "warning",
+    type: "schema_drift",
+    source: "Google Ads — EU",
+    description: "3 new fields detected in the API. Schema may be outdated.",
     timestamp: "2026-03-30T09:45:00Z",
     cta: "Review",
   },
   {
-    id: "alert-3",
+    id: "alert-5",
     severity: "info",
-    source: "Scheduler",
-    description: "Nightly batch job completed with 3 retries.",
-    timestamp: "2026-03-30T03:00:00Z",
+    type: "rate_limit",
+    source: "TikTok Ads — MX",
+    description: "Rate limit usage at 78%. Consider reducing sync frequency.",
+    timestamp: "2026-03-30T09:00:00Z",
   },
-];
+]
 
-export const quickActions: QuickAction[] = [
-  { id: "qa-1", label: "Add Connector", icon: "add_circle" },
-  { id: "qa-2", label: "Run Sync", icon: "sync" },
-  { id: "qa-3", label: "Review Schema", icon: "schema" },
-  { id: "qa-4", label: "New Selector", icon: "ads_click" },
-  { id: "qa-5", label: "View Logs", icon: "terminal" },
-];
+// ── Recent Activity (agentes + pipeline + schema mezclados) ───────────────────
 
-export const pendingApprovals: PendingApproval[] = [
-  {
-    id: "pa-1",
-    description: "New field `ad_set_budget_remaining` in Meta Ads campaigns",
-    type: "schema_change",
-    timestamp: "2026-03-30T07:30:00Z",
-  },
-  {
-    id: "pa-2",
-    description: "TikTok Ads connector — MX market",
-    type: "connector",
-    timestamp: "2026-03-29T18:00:00Z",
-  },
-  {
-    id: "pa-3",
-    description: "Updated ROAS selector logic for Google Ads — EU",
-    type: "selector",
-    timestamp: "2026-03-29T15:20:00Z",
-  },
-];
+export type ActivityType = "sync" | "agent" | "schema" | "deploy" | "token"
+export type ActivityStatus = "success" | "failed" | "running" | "pending"
+
+export interface ActivityEvent {
+  id: string
+  type: ActivityType
+  title: string
+  timestamp: string
+  status: ActivityStatus
+  meta?: string    // info extra (plataforma, tabla, agente)
+}
 
 export const recentActivity: ActivityEvent[] = [
   {
     id: "ae-1",
     type: "sync",
-    title: "Google Ads — US synced successfully",
+    title: "Google Ads US — sync successful",
     timestamp: "2026-03-30T10:02:00Z",
     status: "success",
+    meta: "1,847 records",
   },
   {
     id: "ae-2",
-    type: "schema",
-    title: "Schema migration applied — Meta Ads BR",
+    type: "agent",
+    title: "API Researcher investigated TikTok Ads API",
     timestamp: "2026-03-30T09:50:00Z",
     status: "success",
+    meta: "48 fields discovered",
   },
   {
     id: "ae-3",
-    type: "sync",
-    title: "TikTok Ads — MX sync failed",
-    timestamp: "2026-03-30T09:35:00Z",
-    status: "failed",
+    type: "schema",
+    title: "Table raw_tiktok_ads created in BigQuery",
+    timestamp: "2026-03-30T09:45:00Z",
+    status: "success",
+    meta: "Data Architect",
   },
   {
     id: "ae-4",
-    type: "deploy",
-    title: "Selector v2.3 deployed to staging",
+    type: "sync",
+    title: "Meta Ads BR — sync failed",
     timestamp: "2026-03-30T08:00:00Z",
-    status: "success",
+    status: "failed",
+    meta: "Expired token",
   },
   {
     id: "ae-5",
     type: "agent",
-    title: "Coordinating Agent resolved connector issue",
+    title: "Coordinating Agent resolved schema conflict",
     timestamp: "2026-03-30T07:45:00Z",
     status: "success",
+    meta: "Meta Ads BR",
   },
-];
+  {
+    id: "ae-6",
+    type: "schema",
+    title: "Schema drift detected — Google Ads EU",
+    timestamp: "2026-03-30T07:30:00Z",
+    status: "pending",
+    meta: "3 new fields",
+  },
+  {
+    id: "ae-7",
+    type: "deploy",
+    title: "Selector v2.3 deployed to staging",
+    timestamp: "2026-03-30T06:00:00Z",
+    status: "success",
+    meta: "Google Ads EU",
+  },
+]
 
-export const agentTasks: AgentTask[] = [
-  { id: "at-1", agent: "Coordinating Agent", task: "Orchestrating TikTok Ads — MX pipeline setup", status: "running" },
-  { id: "at-2", agent: "API Researcher Agent", task: "Read TikTok Ads API v2 documentation", status: "completed" },
-  { id: "at-3", agent: "Data Architect Agent", task: "Propose BigQuery schema for TikTok Ads", status: "needs_review" },
-  { id: "at-4", agent: "Software Engineer Agent", task: "Write Cloud Function for Meta Ads BR", status: "completed" },
-  { id: "at-5", agent: "QA & Security Agent", task: "Audit Meta Ads BR connector code", status: "needs_review" },
-  { id: "at-6", agent: "DevOps Agent", task: "Deploy Google Ads EU Cloud Function", status: "completed" },
-];
+// ── Pipelines ─────────────────────────────────────────────────────────────────
 
+export type PipelineStatus = "active" | "paused" | "error" | "syncing"
+export type TokenHealth = "ok" | "expiring" | "expired"
+
+export interface Pipeline {
+  id: string
+  name: string
+  platform: string
+  market: string
+  status: PipelineStatus
+  lastSync: string
+  successRate: number
+  tokenHealth: TokenHealth
+  tokenDaysLeft?: number
+}
+// coomentar para ver onboarding
 export const pipelines: Pipeline[] = [
-  { id: "pl-1", name: "Google Ads Main", platform: "Google Ads", market: "US", status: "active", lastSync: "2026-03-30T10:02:00Z", successRate: 99 },
-  { id: "pl-2", name: "Meta Ads BR", platform: "Meta Ads", market: "BR", status: "error", lastSync: "2026-03-30T04:00:00Z", successRate: 72 },
-  { id: "pl-3", name: "TikTok MX", platform: "TikTok Ads", market: "MX", status: "paused", lastSync: "2026-03-29T22:00:00Z", successRate: 88 },
-  { id: "pl-4", name: "Google Ads EU", platform: "Google Ads", market: "EU", status: "active", lastSync: "2026-03-30T09:58:00Z", successRate: 97 },
-  { id: "pl-5", name: "Meta Ads US", platform: "Meta Ads", market: "US", status: "syncing", lastSync: "2026-03-30T09:30:00Z", successRate: 95 },
-];
+  // {
+  //   id: "pl-1",
+  //   name: "Google Ads Main",
+  //   platform: "Google Ads",
+  //   market: "US",
+  //   status: "active",
+  //   lastSync: "2026-03-30T10:02:00Z",
+  //   successRate: 99,
+  //   tokenHealth: "ok",
+  // },
+  // {
+  //   id: "pl-2",
+  //   name: "Meta Ads BR",
+  //   platform: "Meta Ads",
+  //   market: "BR",
+  //   status: "error",
+  //   lastSync: "2026-03-30T06:00:00Z",
+  //   successRate: 72,
+  //   tokenHealth: "expiring",
+  //   tokenDaysLeft: 2,
+  // },
+  // {
+  //   id: "pl-3",
+  //   name: "TikTok MX",
+  //   platform: "TikTok Ads",
+  //   market: "MX",
+  //   status: "paused",
+  //   lastSync: "2026-03-29T22:00:00Z",
+  //   successRate: 88,
+  //   tokenHealth: "expiring",
+  //   tokenDaysLeft: 6,
+  // },
+  // {
+  //   id: "pl-4",
+  //   name: "Google Ads EU",
+  //   platform: "Google Ads",
+  //   market: "EU",
+  //   status: "active",
+  //   lastSync: "2026-03-30T09:58:00Z",
+  //   successRate: 97,
+  //   tokenHealth: "ok",
+  // },
+  // {
+  //   id: "pl-5",
+  //   name: "Meta Ads US",
+  //   platform: "Meta Ads",
+  //   market: "US",
+  //   status: "syncing",
+  //   lastSync: "2026-03-30T09:30:00Z",
+  //   successRate: 95,
+  //   tokenHealth: "ok",
+  // },
+]
+
+// ── Onboarding (para clientes sin pipelines) ──────────────────────────────────
+
+export interface OnboardingStep {
+  id: string
+  label: string
+  done: boolean
+  href: string
+}
+
+export const onboardingSteps: OnboardingStep[] = [
+  { id: "connector", label: "Connect an API", done: false, href: "/connectors" },
+  { id: "selector",  label: "Select fields", done: false, href: "/selectors" },
+  { id: "schema",    label: "Approve schema", done: false, href: "/schema" },
+  { id: "scheduler", label: "Configure sync", done: false, href: "/scheduler" },
+]
+
+// ── Conector health (sidebar del dash) ───────────────────────────────────────
+
+export type ConnectorStatus = "healthy" | "degraded" | "down"
+
+export interface ConnectorHealth {
+  id: string
+  name: string
+  platform: string
+  status: ConnectorStatus
+  lastCheck: string
+  tokenHealth: TokenHealth
+  tokenDaysLeft?: number
+}
 
 export const connectorHealth: ConnectorHealth[] = [
-  { id: "ch-1", name: "Google Ads", platform: "Google Ads", status: "healthy", lastCheck: "2026-03-30T10:05:00Z" },
-  { id: "ch-2", name: "Meta Ads", platform: "Meta Ads", status: "degraded", lastCheck: "2026-03-30T10:05:00Z" },
-  { id: "ch-3", name: "TikTok Ads", platform: "TikTok Ads", status: "down", lastCheck: "2026-03-30T10:05:00Z" },
-  { id: "ch-4", name: "LinkedIn Ads", platform: "LinkedIn Ads", status: "healthy", lastCheck: "2026-03-30T10:05:00Z" },
-  { id: "ch-5", name: "DV360", platform: "Display & Video 360", status: "healthy", lastCheck: "2026-03-30T10:05:00Z" },
-];
+  { id: "ch-1", name: "Google Ads", platform: "Google Ads", status: "healthy", lastCheck: "2026-03-30T10:05:00Z", tokenHealth: "ok" },
+  { id: "ch-2", name: "Meta Ads", platform: "Meta Ads", status: "degraded", lastCheck: "2026-03-30T10:05:00Z", tokenHealth: "expiring", tokenDaysLeft: 2 },
+  { id: "ch-3", name: "TikTok Ads", platform: "TikTok Ads", status: "down", lastCheck: "2026-03-30T10:05:00Z", tokenHealth: "expiring", tokenDaysLeft: 6 },
+  { id: "ch-4", name: "LinkedIn Ads", platform: "LinkedIn Ads", status: "healthy", lastCheck: "2026-03-30T10:05:00Z", tokenHealth: "ok" },
+  { id: "ch-5", name: "DV360", platform: "Display & Video 360", status: "healthy", lastCheck: "2026-03-30T10:05:00Z", tokenHealth: "ok" },
+]
+
+// ── Quick actions ─────────────────────────────────────────────────────────────
+
+export interface QuickAction {
+  id: string
+  label: string
+  icon: string
+  href: string
+}
+
+export const quickActions: QuickAction[] = [
+  { id: "qa-1", label: "New connector", icon: "add_circle", href: "/connectors" },
+  { id: "qa-2", label: "View selectors", icon: "ads_click", href: "/selectors" },
+  { id: "qa-3", label: "Review schema", icon: "schema", href: "/schema" },
+  { id: "qa-4", label: "Scheduler", icon: "calendar_today", href: "/scheduler" },
+]
