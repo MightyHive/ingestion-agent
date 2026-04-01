@@ -34,6 +34,9 @@ checkpoints.db-wal
 checkpoints.db-shm
 _test_cp.db
 
+# Staged connectors awaiting deployment (temporary files)
+src/pending_deploy/*.py
+
 
 # Ignorar la base de datos vectorial local (de tu script ingest_docs.py)
 chroma_db/
