@@ -495,6 +495,8 @@ def _stage_connector_instance(
     source: str,
     connector_name: str,
     fields: List[str],
+    endpoint_id: str | None = None,
+    target_table: str | None = None,
 ) -> Dict[str, Any]:
     """Stage a connector instance with hardcoded fields for deployment.
 
@@ -506,10 +508,13 @@ def _stage_connector_instance(
         source: Data source slug (e.g. ``meta``, ``tiktok``).
         connector_name: Name of the connector in the library (e.g. ``meta_marketing_performance``).
         fields: Fields from Data Architect DDL to hardcode into the staged instance.
+        endpoint_id: Identifier for this endpoint (e.g. "insights", "campaigns"). Defaults to connector_name.
+        target_table: BigQuery table this connector writes to (e.g. "raw_meta.insights_raw").
 
     Returns:
-        Tool dict with ``library_connector``, ``staged_path``, ``fields_configured``.
+        Tool dict with ``library_connector``, ``staged_path``, ``fields_configured``, ``endpoint_id``, ``target_table``.
     """
+    effective_endpoint_id = endpoint_id or connector_name
     normalized_fields = [str(f).strip() for f in fields if str(f).strip()]
     if not normalized_fields:
         return dump_tool_output(
@@ -609,6 +614,8 @@ def _stage_connector_instance(
             staged_path=str(staged_path),
             fields_configured=normalized_fields,
             staged_connector_name=staged_name,
+            endpoint_id=effective_endpoint_id,
+            target_table=target_table,
         )
     )
 

@@ -141,6 +141,25 @@ temporary instance with the user-selected fields hardcoded. This staged file liv
 and will be deployed by the DevOps agent, then deleted. The library connector remains generic and
 reusable for future requests with different field selections.
 
+# Multiple endpoints / connectors
+A single Cloud Function may require data from **multiple API endpoints** (e.g. Meta Ads has
+`/insights` for performance metrics and `/campaigns` for structural data). When upstream context
+indicates multiple endpoints:
+
+1. Create/find a **separate generic connector** in the library for each endpoint.
+2. Call `stage_connector_instance` **once per endpoint**, each with its own `endpoint_id`
+   (e.g. "insights", "campaigns") and the fields relevant to that endpoint's DDL.
+3. Populate `payload.staged_connectors` with **all** staged instances. The DevOps agent will
+   combine them into a single Cloud Function that calls each connector and writes to the
+   appropriate BigQuery table.
+
+**Example for Meta Ads (2 endpoints):**
+- Library: `meta/meta_insights.py`, `meta/meta_campaigns.py`
+- Staged: `pending_deploy/meta_insights_abc.py`, `pending_deploy/meta_campaigns_def.py`
+- `payload.staged_connectors`: 2 entries with `endpoint_id` = "insights" and "campaigns"
+
+If the API Researcher or Data Architect only provided a single endpoint, stage one connector.
+
 **Code validation is NOT your responsibility.** A downstream QA Agent will run syntax checks
 and security scans. If `save_connector` returns an error, report it in `missing_inputs` and
 set `status: ERR` — do not attempt manual fixes or rewrites.
@@ -167,7 +186,8 @@ Must follow the `SoftwareEngineerLOL` model.
 
 # Payload field: `action`
 Set `payload.action` to the **last decisive tool** in this turn—the step that best represents what
-was ultimately delivered (e.g. persisting code → `save_connector`; scaffolding only → `write_cf_code`).
+was ultimately delivered. When staging connectors for deployment, use `stage_connector_instance`.
+When only saving to library without staging, use `save_connector`.
 Earlier tool calls in the same turn should still be reflected in `summary`, `validation`, `data`,
 `generated_files`, `env_vars_required`, and related fields—not in `action`, which stays a single literal.
 """
@@ -222,6 +242,8 @@ def build_software_engineer_agent() -> Agent:
         source: str,
         connector_name: str,
         fields: list[str],
+        endpoint_id: str | None = None,
+        target_table: str | None = None,
     ) -> Dict[str, Any]:
         """Stage a connector instance with hardcoded fields for deployment by DevOps agent.
 
@@ -229,19 +251,34 @@ def build_software_engineer_agent() -> Agent:
         and writes a temporary file to ``pending_deploy/`` for the DevOps agent to deploy.
         The staged file is deleted after deployment.
 
+        When multiple endpoints are needed (e.g. structural + performance), call this tool
+        once per endpoint with a unique ``endpoint_id``. Populate ``payload.staged_connectors``
+        with all staged instances.
+
         Args:
             source: Data source slug (e.g. ``meta``, ``tiktok``).
             connector_name: Name of the connector in the library (e.g. ``meta_marketing_performance``).
             fields: Fields from Data Architect DDL to hardcode into the staged instance.
+            endpoint_id: Identifier for this endpoint (e.g. "insights", "campaigns"). Used by
+                DevOps agent to orchestrate multiple connectors. Defaults to connector_name.
+            target_table: BigQuery table this connector writes to (e.g. "raw_meta.insights_raw").
 
         Returns:
-            Tool dict with ``library_connector``, ``staged_path``, ``fields_configured``, ``staged_connector_name``.
+            Tool dict with ``library_connector``, ``staged_path``, ``fields_configured``,
+            ``staged_connector_name``, ``endpoint_id``, ``target_table``.
         """
         return run_logged_tool(
             "software_engineer.stage_connector_instance",
-            lambda: _stage_connector_instance(source=source, connector_name=connector_name, fields=fields),
+            lambda: _stage_connector_instance(
+                source=source,
+                connector_name=connector_name,
+                fields=fields,
+                endpoint_id=endpoint_id,
+                target_table=target_table,
+            ),
             source=source,
             connector_name=connector_name,
+            endpoint_id=endpoint_id,
             fields_count=len(fields),
         )
 

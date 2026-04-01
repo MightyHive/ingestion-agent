@@ -39,36 +39,42 @@ Use this skill when requests involve:
    - Use `get_gold_standard_code` to fetch approved template code.
    - Use `read_connector` if source code inspection is needed.
 4. If connector is missing (or you are creating new code):
-   - Generate a reusable connector with top-level `fetch(params, context)`.
-   - Connector implementation must read requested columns/metrics from `params["fields"]`.
-   - Use `write_cf_code` for scaffolding strings only, then **`validate_connector_code` → `save_connector`**.
+   - Generate a **generic, reusable** connector with top-level `fetch(params, context)`.
+   - Connector must read requested columns/metrics from `params["fields"]` (not hardcoded).
+   - Use `write_cf_code` for scaffolding strings only, then **`save_connector`**.
    - **Persistence is mandatory:** you must not treat generated code as "done" until `save_connector` succeeds.
    - Set `overwrite=True` only for explicit updates.
-5. If user selects specific columns/metrics, use `modify_payload_and_columns` on template code, then again
-   **`validate_connector_code` → `save_connector`** on the final source.
-6. Use `identify_environment_variables` to detect required env vars/secrets from generated code (before or after save;
-   if after `write_cf_code`, still complete **`save_connector`** before considering the authoring task finished).
-7. Return a clear summary grounded in real tool outputs.
-8. If blocked by risk or missing critical context, set:
+5. **Stage for deployment:** After saving the generic connector, use `stage_connector_instance` to create a
+   temporary instance with user-selected fields hardcoded. This staged file lives in `pending_deploy/` and
+   will be deployed by the DevOps agent.
+6. **Multiple endpoints:** If the API requires multiple endpoints (e.g. structural + performance), create
+   and save a separate connector for each endpoint, then call `stage_connector_instance` once per endpoint.
+   Populate `payload.staged_connectors` with all staged instances.
+7. Use `identify_environment_variables` to detect required env vars/secrets from generated code.
+8. Return a clear summary grounded in real tool outputs.
+9. If blocked by risk or missing critical context, set:
    - `needs_human_approval=true`
    - `approval_reason` with a concise explanation
 
 ## Persistence
 
 - **Library-first:** this agent exists to maintain the on-disk connector library. `write_cf_code` returns strings only;
-  **every authoring flow must end with `save_connector`** after `validate_connector_code`, unless the turn is
-  read-only or ends in `ERR`.
+  **every authoring flow must end with `save_connector`**, unless the turn is read-only or ends in `ERR`.
 - Do not set `payload.file_path` or imply a saved file unless `save_connector` returned success.
-- For authoring turns that succeed, prefer `payload.action` = **`save_connector`** (last decisive step).
+- **Staging:** after saving a generic connector, use `stage_connector_instance` to create a deployment-ready
+  instance with hardcoded fields. Staged files live in `pending_deploy/` and are deleted after deployment.
+- For authoring turns that include staging, prefer `payload.action` = **`stage_connector_instance`** (last decisive step).
+  For turns that only save to library without staging, use **`save_connector`**.
 
 ## Output contract (`SoftwareEngineerLOL`)
 
 ### `payload.action`
 
 - Set `payload.action` to the **last decisive tool** in the turn—the step that best represents what was ultimately delivered to the user.
-- Example (authoring): `write_cf_code` → `validate_connector_code` → `identify_environment_variables` → `save_connector` → use **`save_connector`** as `action` (persistence is the closing outcome).
-- If the turn **only** validates because save failed or was impossible, use **`validate_connector_code`**; if only inventory, use **`list_connectors`**. Do not close an authoring success with **`write_cf_code`** as `action`.
-- Earlier steps in the same turn must still appear in `summary`, `validation`, `data`, `generated_files`, `env_vars_required`—not by stacking multiple values into `action`.
+- Example (authoring + staging): `write_cf_code` → `save_connector` → `stage_connector_instance` → use **`stage_connector_instance`** as `action`.
+- Example (authoring only): `write_cf_code` → `save_connector` → use **`save_connector`** as `action`.
+- If only inventory, use **`list_connectors`**. Do not close an authoring success with **`write_cf_code`** as `action`.
+- Earlier steps in the same turn must still appear in `summary`, `data`, `generated_files`, `env_vars_required`, `staged_connectors`—not by stacking multiple values into `action`.
 
 ### `payload.summary` and structured fields
 
@@ -107,8 +113,9 @@ When the coordinator or instruction includes API research results, expect these 
 1. Build the `api_research` dict for `write_cf_code` by forwarding:
    `reporting_endpoint`, `auth`, `available_fields`, `pagination`, `platform`, `rate_limit`.
 2. The tool parses them automatically: extracts URL, auth pattern, env vars from credentials, DEFAULT_FIELDS from canonical fields, and pagination logic.
-3. After scaffolding, use `modify_payload_and_columns` with `api_field` names from `available_fields` if the user selected specific fields.
-4. Always validate and save before claiming success.
+3. Save the generic connector to the library via `save_connector`.
+4. Use `stage_connector_instance` with the specific fields from the Data Architect DDL to create a deployment-ready instance.
+5. If multiple endpoints are needed, repeat steps 1-4 for each endpoint.
 
 ### Rules
 
@@ -124,17 +131,20 @@ When the coordinator or instruction includes API research results, expect these 
 - If exact template is not found but `close_matches` exists, present options instead of forcing creation.
 - If no suitable match exists, continue with `write_cf_code`.
 
-### `modify_payload_and_columns`
-- Use only after selecting explicit `fields` from user request.
-- Keep injected fields deterministic and minimal; do not add unrelated metrics.
-- After modification, run `validate_connector_code` before saving.
+### `stage_connector_instance`
+- Use after saving a generic connector to create a deployment-ready instance with hardcoded fields.
+- Pass `source`, `connector_name`, `fields` (from Data Architect DDL), and optionally `endpoint_id` and `target_table`.
+- For multiple endpoints, call this tool once per endpoint with a unique `endpoint_id`.
+- Populate `payload.staged_connectors` with all staged instances.
+- Staged files live in `pending_deploy/` and are deleted by DevOps after deployment.
 
 ### `write_cf_code`
 - Use when no approved template is available or when a fresh connector is requested.
 - Enforce naming `[source]_[type]` and `fetch(params, context)` contract.
 - Pass **`api_research`** with the full `APIResearcherPayload` fields when upstream research is available (`reporting_endpoint`, `auth`, `available_fields`, `pagination`, `platform`, `rate_limit`). If those are absent, prefer listing gaps in **`missing_inputs`** over inventing URLs or auth.
 - Generated code must rely on `params["fields"]` and avoid hardcoded credentials.
-- Always follow with `validate_connector_code`, then `save_connector`.
+- Always follow with `save_connector` to persist the generic connector to the library.
+- **Code validation is NOT this agent's responsibility.** A downstream QA Agent will run syntax checks.
 
 ### `identify_environment_variables`
 - Run on generated/modified code before final answer when env vars are unclear.
@@ -146,7 +156,6 @@ When the coordinator or instruction includes API research results, expect these 
 - `list_connectors`
 - `find_connector`
 - `read_connector`
-- `validate_connector_code`
 - `save_connector`
 
 Use these directly as deterministic support steps inside the workflow above.
@@ -170,4 +179,4 @@ Required input contract:
 - Never create one-off connectors tied to literal values from a single prompt.
 - Never violate naming convention `[source]_[type]`.
 - Never hardcode secrets, API keys, or tokens in connector code.
-- Never save invalid Python code.
+- Library connectors must remain **generic** (use `params["fields"]`); hardcoded fields belong only in staged instances.

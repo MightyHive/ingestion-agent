@@ -99,25 +99,51 @@ class GeneratedFile(BaseModel):
 # SOFTWARE ENGINEER — Connector code engineering
 # ============================================================
 
+
+class StagedConnectorRef(BaseModel):
+    """Reference to a connector instance staged for deployment."""
+
+    endpoint_id: str = Field(
+        description=(
+            "Identifier linking this staged connector to an API endpoint. "
+            "E.g. 'insights', 'campaigns', 'creatives'. Used by DevOps agent to orchestrate "
+            "multiple connectors into a single Cloud Function."
+        )
+    )
+    library_path: str = Field(
+        description="Absolute path to the generic connector in the permanent library."
+    )
+    staged_path: str = Field(
+        description="Absolute path to the staged instance in pending_deploy/ (temporary)."
+    )
+    fields_configured: List[str] = Field(
+        default_factory=list,
+        description="Fields hardcoded into the staged instance from Data Architect DDL."
+    )
+    target_table: Optional[str] = Field(
+        default=None,
+        description="BigQuery table this connector writes to (from DDL), e.g. 'raw_meta.insights_raw'."
+    )
+
+
 class SoftwareEngineerPayload(BaseModel):
     action: Literal[
         "list_connectors",
         "find_connector",
         "read_connector",
-        "validate_connector_code",
         "save_connector",
         "overwrite_connector",
         "get_gold_standard_code",
-        "modify_payload_and_columns",
+        "stage_connector_instance",
         "write_cf_code",
         "identify_environment_variables",
         "error",
     ] = Field(
         description=(
             "Which tool outcome this turn should be filed under: use the **last** registered tool "
-            "that was decisive for the user-facing result. When authoring connector code, the turn "
-            "should normally end with `save_connector` (new file) or `overwrite_connector` (replace after user consent)—"
-            "not `write_cf_code`. Matches `@agent.tool` names; use `error` only when no successful tool path applies."
+            "that was decisive for the user-facing result. When authoring and staging connectors, "
+            "the turn should end with `stage_connector_instance`. Matches `@agent.tool` names; "
+            "use `error` only when no successful tool path applies."
         )
     )
     connector_name: Optional[str] = Field(
@@ -142,6 +168,15 @@ class SoftwareEngineerPayload(BaseModel):
         description=(
             "Only paths confirmed by tools or present on disk (e.g. save_connector / overwrite_connector output). "
             "Do not list files that were not written."
+        ),
+    )
+    staged_connectors: List[StagedConnectorRef] = Field(
+        default_factory=list,
+        description=(
+            "Connector instances staged for deployment via `stage_connector_instance`. "
+            "Each entry represents one connector ready for the DevOps agent to deploy. "
+            "When a Cloud Function requires multiple endpoints (e.g. structural + performance), "
+            "this list will contain multiple entries that DevOps will combine into one function."
         ),
     )
     env_vars_required: List[str] = Field(

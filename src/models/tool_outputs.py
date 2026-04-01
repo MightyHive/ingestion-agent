@@ -215,6 +215,14 @@ class StageConnectorToolOutput(ToolOutput):
     staged_connector_name: str = Field(
         description="Name of the staged connector file (without path).",
     )
+    endpoint_id: str = Field(
+        default="",
+        description="Identifier for this endpoint (e.g. 'insights', 'campaigns'). Used by DevOps to orchestrate multiple connectors.",
+    )
+    target_table: Optional[str] = Field(
+        default=None,
+        description="BigQuery table this connector writes to (e.g. 'raw_meta.insights_raw').",
+    )
 
 
 class CloudFunctionCodeToolOutput(ToolOutput):
