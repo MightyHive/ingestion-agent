@@ -37,9 +37,10 @@ from agents.software_engineer_agent import (
     build_software_engineer_agent,
     SoftwareEngineerDeps,
 )
+from agents.api_researcher_agent import build_api_researcher_agent, APIResearcherDeps
 from agents.synthesizer_agent import build_synthesizer_agent
 from config.settings import settings
-from models.lol import DataArchitectLOL, SoftwareEngineerLOL
+from models.lol import DataArchitectLOL, SoftwareEngineerLOL, APIResearcherLOL
 from state import AgentGraphState
 from synthesis_enrichment import (
     extract_enrichment_from_events,
@@ -325,7 +326,7 @@ async def _run_specialist_node(
     if not instruction:
         return {}
 
-    if not is_observability_enabled():
+    if settings.RUN_MODE == "cli" and not is_observability_enabled():
         print(minimal_trace_message)
     log_agent_start(display_name, instruction=instruction)
     started = time.perf_counter()
@@ -382,10 +383,11 @@ def prepare_new_turn(state: AgentGraphState) -> dict:
 
 async def coordinator_node(state: AgentGraphState) -> dict:
     """Call the Coordinator PydanticAI agent and build dispatch targets."""
-    if is_observability_enabled():
-        print()
-    else:
-        print("\n   🧠 [Coordinator planning...]")
+    if settings.RUN_MODE == "cli":
+        if is_observability_enabled():
+            print()
+        else:
+            print("\n   🧠 [Coordinator planning...]")
     log_agent_start("Coordinator")
     started = time.perf_counter()
 
@@ -451,6 +453,61 @@ async def coordinator_node(state: AgentGraphState) -> dict:
     }
 
 
+async def api_researcher_node(state: AgentGraphState) -> dict:
+    """Invoke the API Researcher agent and return a LOL event."""
+    async def _invoke(prompt: str) -> tuple[dict, dict]:
+            # Enrich instruction with known platform context if applicable
+            from agents.api_researcher_agent import _resolve_platform
+            platform_data = _resolve_platform(prompt)
+            if platform_data:
+                prompt = (
+                    f"{prompt}\n\n"
+                    f"[KNOWN PLATFORM]\n"
+                    f"display_name:   {platform_data['display_name']}\n"
+                    f"docs_url:       {platform_data['docs_url']}\n"
+                    f"reference_file: {platform_data['reference_file']}\n\n"
+                    f"Step 1: call read_documentation_url('{platform_data['reference_file']}') — source of truth.\n"
+                    f"Step 2: call read_documentation_url('{platform_data['docs_url']}') — freshness check.\n"
+                    f"Set action='freshness_check'."
+                )
+            result = await build_api_researcher_agent().run(
+                prompt,
+                deps=APIResearcherDeps(
+                    project_id=settings.PROJECT_ID_LLM or "",
+                    location=settings.LOCATION,
+                ),
+            )
+            return result.output.model_dump(), extract_usage(result)
+
+    default_payload = APIResearcherLOL(
+        status="ERR",
+        reason="API Researcher failure.",
+        payload={
+            "action": "error",
+            "platform": "",
+            "auth": {"method": "UNKNOWN", "required_credentials": [], "token_type": "UNKNOWN", "expiry": "UNKNOWN"},
+            "reporting_endpoint": "UNKNOWN",
+            "available_fields": [],
+            "pagination": "UNKNOWN",
+            "rate_limit": "UNKNOWN",
+            "freshness_check": {"checked": False, "changes_detected": False},
+            "missing_inputs": [],
+            "summary": "API Researcher failed to process the request.",
+            "total_fields_discovered":0,
+            "canonical_fields_found":0,
+            "discovery_method":"docs_only",
+        },
+    ).payload.model_dump()
+
+    return await _run_specialist_node(
+        state,
+        "api_researcher",
+        "API Researcher",
+        "   🔍 [API Researcher investigating...]",
+        _invoke,
+        default_payload,
+    )
+
 async def data_architect_node(state: AgentGraphState) -> dict:
     """Invoke the Data Architect agent and return a LOL event."""
 
@@ -465,7 +522,18 @@ async def data_architect_node(state: AgentGraphState) -> dict:
     default_payload = DataArchitectLOL(
         status="ERR",
         reason="Data architect failure.",
-        payload={"dataset_target": "", "action_taken": "error"},
+        payload={
+            "action_taken": "error",
+            "dataset_target": "",
+            "table_name": None,
+            "selected_fields": [],
+            "schema_preview": [],
+            "proposed_ddl": None,
+            "sql_preview": None,
+            "ddl_approved": False,
+            "missing_inputs": [],
+            "summary": "Data Architect failed to process the request.",
+        },
     ).payload.model_dump()
     return await _run_specialist_node(
         state,
@@ -475,6 +543,16 @@ async def data_architect_node(state: AgentGraphState) -> dict:
         _invoke,
         default_payload,
     )
+
+
+def _extract_event_payload(state: AgentGraphState, agent_id: str) -> str | None:
+    """Return the JSON-serialized payload of a successful LOL from ``agent_id`` in the event_bus."""
+    for event in state.get("event_bus", []):
+        if event.get("id") == agent_id and event.get("status") != "ERR":
+            payload = event.get("payload")
+            if payload:
+                return json.dumps(payload, default=str)
+    return None
 
 
 async def software_engineer_node(state: AgentGraphState) -> dict:
@@ -512,6 +590,27 @@ async def software_engineer_node(state: AgentGraphState) -> dict:
             "summary": "Software engineer failed to process the request.",
         },
     ).payload.model_dump()
+
+    current = state.get("task_plan", {}).get("software_engineer", "")
+    if current:
+        research_json = _extract_event_payload(state, "api_researcher")
+        if research_json:
+            current = (
+                f"{current}\n\n"
+                f"API_RESEARCH_CONTEXT (APIResearcherPayload — forward to write_cf_code as api_research):\n"
+                f"{research_json}"
+            )
+
+        schema_json = _extract_event_payload(state, "data_architect")
+        if schema_json:
+            current = (
+                f"{current}\n\n"
+                f"DATA_ARCHITECT_CONTEXT (DataArchitectPayload — target dataset and DDL for the connector):\n"
+                f"{schema_json}"
+            )
+
+        state["task_plan"]["software_engineer"] = current
+
     return await _run_specialist_node(
         state,
         "software_engineer",
@@ -524,7 +623,7 @@ async def software_engineer_node(state: AgentGraphState) -> dict:
 
 def out_of_scope_node(state: AgentGraphState) -> dict:
     """Guardrail: request outside scope. Add: copy and rules for your domain."""
-    if not is_observability_enabled():
+    if settings.RUN_MODE == "cli" and not is_observability_enabled():
         print("   🚫 [Guardrail: request out of scope]")
     log_console("agent", "start", "Guardrail out_of_scope")
     lol = {
@@ -543,7 +642,7 @@ def out_of_scope_node(state: AgentGraphState) -> dict:
 
 def capabilities_help_node(state: AgentGraphState) -> dict:
     """Add: help text matching your real agents and tools."""
-    if not is_observability_enabled():
+    if settings.RUN_MODE == "cli" and not is_observability_enabled():
         print("   📖 [Help manual activated]")
     log_console("agent", "start", "Help manual")
     help_text = (
@@ -568,7 +667,7 @@ def coordinator_failure_node(state: AgentGraphState) -> dict:
 
 async def synthesizer_node(state: AgentGraphState) -> dict:
     """Produce the final Markdown answer via the Synthesizer PydanticAI agent."""
-    if not is_observability_enabled():
+    if settings.RUN_MODE == "cli" and not is_observability_enabled():
         print("   ✍️  [Synthesizer drafting final response...]")
     log_agent_start("Synthesizer")
     started = time.perf_counter()
@@ -668,6 +767,7 @@ builder = StateGraph(AgentGraphState)
 
 builder.add_node("prepare_new_turn", prepare_new_turn)
 builder.add_node("coordinator", coordinator_node)
+builder.add_node("api_researcher", api_researcher_node)
 builder.add_node("data_architect", data_architect_node)
 builder.add_node("software_engineer", software_engineer_node)
 builder.add_node("out_of_scope", out_of_scope_node)
