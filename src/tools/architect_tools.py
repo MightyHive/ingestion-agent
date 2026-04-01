@@ -31,6 +31,8 @@ class DataArchitectDeps:
     """Runtime dependencies for Data Architect tools."""
 
     project_id: str
+    #: Optional mutable dict filled by ``propose_bq_schema`` so LangGraph can persist ``table_ddl``.
+    artifact_sidecar: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +298,16 @@ def register_architect_tools(agent: Agent[Any, Any]) -> None:
         Pass the sample or schema JSON as a string.
         """
         out = _propose_bq_schema(selected_fields_json, platform, project_id=ctx.deps.project_id, dataset=dataset)
+        sidecar = ctx.deps.artifact_sidecar
+        if sidecar is not None and out.status == "OK" and out.msg:
+            try:
+                parsed = json.loads(out.msg)
+                if isinstance(parsed, dict):
+                    ddl = parsed.get("proposed_ddl")
+                    if isinstance(ddl, str) and ddl.strip():
+                        sidecar["table_ddl"] = ddl.strip()
+            except (json.JSONDecodeError, TypeError):
+                pass
         return dump_tool_output(out)
 
     @agent.tool

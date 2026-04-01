@@ -28,6 +28,13 @@ dist/
 traces/
 *.log
 
+# LangGraph SQLite checkpointer (local persistence)
+checkpoints.db
+checkpoints.db-wal
+checkpoints.db-shm
+_test_cp.db
+
+
 # Ignorar la base de datos vectorial local (de tu script ingest_docs.py)
 chroma_db/
 

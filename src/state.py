@@ -7,7 +7,7 @@ event bus and context fields useful for future multi-agent integration.
 """
 
 from operator import add
-from typing import Annotated, Optional, TypedDict
+from typing import Annotated, Any, Optional, TypedDict
 
 
 def _event_bus_reducer(current: list[dict], update: list[dict]) -> list[dict]:
@@ -21,6 +21,18 @@ def _event_bus_reducer(current: list[dict], update: list[dict]) -> list[dict]:
     return current + update
 
 
+def _artifacts_reducer(current: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
+    """
+    Merge artifact keys across turns. Empty update does not clear (prepare_new_turn omits artifacts).
+    Later writes overwrite the same key.
+    """
+    if not update:
+        return dict(current or {})
+    merged = dict(current or {})
+    merged.update(update)
+    return merged
+
+
 class AgentGraphState(TypedDict):
     user_query: str
 
@@ -31,6 +43,9 @@ class AgentGraphState(TypedDict):
 
     # LOL event bus (reset each turn via reducer for new turns)
     event_bus: Annotated[list[dict], _event_bus_reducer]
+
+    # Cross-turn handoff (not cleared in prepare_new_turn): e.g. table_ddl from Data Architect
+    artifacts: Annotated[dict[str, Any], _artifacts_reducer]
 
     # Per-node usage for turn-level observability
     obs_usages: Annotated[list[dict], add]
