@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict
 
@@ -33,6 +33,8 @@ class SoftwareEngineerDeps:
 
     project_id: str
     location: str
+    #: Cross-turn artifact snapshot from LangGraph (e.g. ``table_ddl`` from Data Architect).
+    artifacts: dict[str, Any] = field(default_factory=dict)
 
 
 _SKILLS_DIR = Path(__file__).resolve().parents[1] / "skills"
@@ -85,6 +87,12 @@ Contains the Data Architect's BigQuery schema decision: `dataset_target` (e.g.
 - Align the connector's output columns with the columns declared in the DDL.
 - If `proposed_ddl` is null or `action_taken` indicates no schema was finalized yet,
   note this gap in `missing_inputs` and proceed with a best-effort scaffold.
+
+## Runtime ``deps.artifacts`` (same session, prior turns)
+The graph may inject ``deps.artifacts["table_ddl"]`` when the turn-local ``event_bus`` no longer
+contains the Data Architect LOL (e.g. Software Engineer runs alone on a follow-up turn).
+Always pass this into ``write_cf_code`` implicitly via the tool implementation: the scaffold
+embeds the DDL in the module header when present.
 
 **When both contexts are absent:** do NOT fabricate endpoints, auth flows, field names,
 or BigQuery destinations. Set `status: WARN` or `ERR`, explain what is missing in
@@ -218,9 +226,16 @@ def build_software_engineer_agent() -> Agent:
         Returns:
             Tool dict with ``main_py``, ``requirements_txt``, ``connector_name``, ``suggested_env_vars``.
         """
+        table_ddl = (ctx.deps.artifacts or {}).get("table_ddl")
+        table_ddl_str = table_ddl.strip() if isinstance(table_ddl, str) else None
         return run_logged_tool(
             "software_engineer.write_cf_code",
-            lambda: _write_cf_code(source=source, connector_type=connector_type, api_research=api_research),
+            lambda: _write_cf_code(
+                source=source,
+                connector_type=connector_type,
+                api_research=api_research,
+                table_ddl=table_ddl_str,
+            ),
             source=source,
             connector_type=connector_type,
         )

@@ -568,11 +568,15 @@ def _write_cf_code(
     source: str,
     connector_type: str,
     api_research: Dict[str, Any] | None = None,
+    table_ddl: str | None = None,
 ) -> Dict[str, Any]:
     """Generate ``main_py`` + ``requirements_txt`` scaffold from API research context.
 
     Expects the ``APIResearcherPayload`` shape: ``reporting_endpoint``,
     ``auth`` object, ``available_fields``, ``pagination``, ``platform``, ``rate_limit``.
+
+    ``table_ddl`` is optional persisted Bronze DDL from LangGraph ``artifacts`` when the
+    current turn's ``event_bus`` no longer carries the Data Architect payload.
     """
     source_name = _normalize_source(source)
     type_name = _sanitize_segment(connector_type)
@@ -616,6 +620,11 @@ def _write_cf_code(
         header_comment += f"\nRate limit: {rate_limit}"
     if auth_method:
         header_comment += f"\nAuth: {auth_method}"
+    if table_ddl and str(table_ddl).strip():
+        ddl_text = str(table_ddl).strip().replace('"""', "'''")
+        if len(ddl_text) > 6000:
+            ddl_text = ddl_text[:6000] + "\n... [truncated]"
+        header_comment += f"\n\nBronze DDL (persisted from Data Architect):\n{ddl_text}"
     header_comment += '\n"""'
 
     # ── Build auth block ──────────────────────────────────────────────────────

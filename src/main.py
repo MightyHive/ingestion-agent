@@ -10,8 +10,9 @@ Special nodes:
   Coordinator ERR -> coordinator_failure -> END
   out_of_scope / capabilities_help -> END directly
 
-Memory: MemorySaver checkpointer persists state across turns.
+Memory: AsyncSqliteSaver (langgraph-checkpoint-sqlite) persists state across turns to checkpoints.db.
         conversation_context holds a lean summary of prior exchanges.
+        Initialize the graph with await init_graph_async() before astream/ainvoke (CLI and API).
 
 Trace: Each turn writes a .md file under traces/ with the full flow.
 
@@ -23,12 +24,15 @@ import os
 import sys
 import time
 import asyncio
+import threading
 from datetime import datetime
+from pathlib import Path
 
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
+import aiosqlite
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.checkpoint.memory import MemorySaver
 
 from agent_registry import ALL_AGENT_NAMES, NORMAL_AGENT_NAMES, SPECIAL_AGENT_NAMES
 from agents.coordinator_agent import build_coordinator_agent, CoordinatorDeps
@@ -320,9 +324,13 @@ async def _run_specialist_node(
     invoke_fn: Callable[[str], Awaitable[tuple[dict, dict]]],
     payload_defaults: dict,
     max_retries: int | None = None,
+    instruction_override: str | None = None,
 ) -> dict:
     """Run a specialist node with start/end observability."""
-    instruction = state.get("task_plan", {}).get(agent_id, "")
+    if instruction_override is not None:
+        instruction = instruction_override
+    else:
+        instruction = state.get("task_plan", {}).get(agent_id, "")
     if not instruction:
         return {}
 
@@ -357,6 +365,8 @@ def prepare_new_turn(state: AgentGraphState) -> dict:
     """
     Entry node: reset prior-turn execution state
     and refresh conversation_context with the previous exchange.
+
+    Does not return ``artifacts`` so the checkpointer keeps cross-turn values (e.g. table_ddl).
     """
     prev_query = state.get("_last_user_query", "")
     prev_response = state.get("final_response")
@@ -393,6 +403,16 @@ async def coordinator_node(state: AgentGraphState) -> dict:
 
     context = state.get("conversation_context", [])
     user_query = state["user_query"]
+
+    artifacts = state.get("artifacts") or {}
+    if artifacts:
+        artifacts_note = json.dumps(artifacts, default=str, ensure_ascii=False)
+        user_query = (
+            "PERSISTED_ARTIFACTS (available from prior turns in this session; do not re-run upstream "
+            "agents for data already present unless the user asks to change it):\n"
+            f"{artifacts_note}\n\n"
+            f"{user_query}"
+        )
 
     if context:
         context_lines = []
@@ -511,10 +531,15 @@ async def api_researcher_node(state: AgentGraphState) -> dict:
 async def data_architect_node(state: AgentGraphState) -> dict:
     """Invoke the Data Architect agent and return a LOL event."""
 
+    ddl_sidecar: dict[str, Any] = {}
+
     async def _invoke(prompt: str) -> tuple[dict, dict]:
         result = await build_data_architect_agent().run(
             prompt,
-            deps=DataArchitectDeps(project_id=settings.PROJECT_ID_DATA or ""),
+            deps=DataArchitectDeps(
+                project_id=settings.PROJECT_ID_DATA or "",
+                artifact_sidecar=ddl_sidecar,
+            ),
         )
         lol = result.output.model_dump()
         return lol, extract_usage(result)
@@ -535,7 +560,7 @@ async def data_architect_node(state: AgentGraphState) -> dict:
             "summary": "Data Architect failed to process the request.",
         },
     ).payload.model_dump()
-    return await _run_specialist_node(
+    node_out = await _run_specialist_node(
         state,
         "data_architect",
         "Data Architect",
@@ -543,6 +568,18 @@ async def data_architect_node(state: AgentGraphState) -> dict:
         _invoke,
         default_payload,
     )
+    ddl = (ddl_sidecar.get("table_ddl") or "").strip()
+    if not ddl and node_out.get("event_bus"):
+        last = node_out["event_bus"][-1]
+        if last.get("id") == "data_architect":
+            raw = (last.get("payload") or {}).get("proposed_ddl")
+            if isinstance(raw, str) and raw.strip():
+                ddl = raw.strip()
+    if ddl:
+        merged = dict(node_out)
+        merged["artifacts"] = {"table_ddl": ddl}
+        return merged
+    return node_out
 
 
 def _extract_event_payload(state: AgentGraphState, agent_id: str) -> str | None:
@@ -564,6 +601,7 @@ async def software_engineer_node(state: AgentGraphState) -> dict:
             deps=SoftwareEngineerDeps(
                 project_id=settings.PROJECT_ID_DATA or settings.PROJECT_ID_LLM or "",
                 location=settings.LOCATION,
+                artifacts=dict(state.get("artifacts") or {}),
             ),
         )
         lol = result.output.model_dump()
@@ -591,25 +629,36 @@ async def software_engineer_node(state: AgentGraphState) -> dict:
         },
     ).payload.model_dump()
 
-    current = state.get("task_plan", {}).get("software_engineer", "")
-    if current:
-        research_json = _extract_event_payload(state, "api_researcher")
-        if research_json:
-            current = (
-                f"{current}\n\n"
-                f"API_RESEARCH_CONTEXT (APIResearcherPayload — forward to write_cf_code as api_research):\n"
-                f"{research_json}"
+    base_instruction = (state.get("task_plan", {}) or {}).get("software_engineer", "") or ""
+    segments: list[str] = []
+    if base_instruction.strip():
+        segments.append(base_instruction.strip())
+
+    research_json = _extract_event_payload(state, "api_researcher")
+    if research_json:
+        segments.append(
+            "API_RESEARCH_CONTEXT (APIResearcherPayload — forward to write_cf_code as api_research):\n"
+            f"{research_json}"
+        )
+
+    schema_json = _extract_event_payload(state, "data_architect")
+    if schema_json:
+        segments.append(
+            "DATA_ARCHITECT_CONTEXT (DataArchitectPayload — target dataset and DDL for the connector):\n"
+            f"{schema_json}"
+        )
+    else:
+        persisted_ddl = (state.get("artifacts") or {}).get("table_ddl")
+        if isinstance(persisted_ddl, str) and persisted_ddl.strip():
+            segments.append(
+                "PERSISTED_ARTIFACT table_ddl (from a prior turn; event_bus was cleared — "
+                "write_cf_code receives this via runtime deps.artifacts; excerpt:\n"
+                f"{persisted_ddl.strip()[:8000]}"
             )
 
-        schema_json = _extract_event_payload(state, "data_architect")
-        if schema_json:
-            current = (
-                f"{current}\n\n"
-                f"DATA_ARCHITECT_CONTEXT (DataArchitectPayload — target dataset and DDL for the connector):\n"
-                f"{schema_json}"
-            )
-
-        state["task_plan"]["software_engineer"] = current
+    merged_instruction = "\n\n".join(segments) if segments else base_instruction.strip()
+    if not merged_instruction.strip():
+        return {}
 
     return await _run_specialist_node(
         state,
@@ -618,6 +667,7 @@ async def software_engineer_node(state: AgentGraphState) -> dict:
         "   🧩 [Software Engineer working...]",
         _invoke,
         default_payload,
+        instruction_override=merged_instruction.strip(),
     )
 
 
@@ -795,9 +845,49 @@ builder.add_edge("coordinator_failure", END)
 builder.add_edge("out_of_scope", END)
 builder.add_edge("capabilities_help", END)
 
-memory = MemorySaver()
-# Exposed for FastAPI (`api.py`). Safe to import: the CLI runs only under `if __name__ == "__main__"`.
-compiled_graph = builder.compile(checkpointer=memory)
+# Persistent async checkpoint store (required for astream/aget_state; sync SqliteSaver is not async-safe).
+CHECKPOINT_DB_PATH = str(Path(__file__).resolve().parent.parent / "checkpoints.db")
+
+_compiled_graph = None
+_checkpoint_conn: aiosqlite.Connection | None = None
+_graph_init_lock: asyncio.Lock | None = None
+_graph_init_lock_factory = threading.Lock()
+# Populated by init_graph_async(); exposed for importers that read it after startup (e.g. tests).
+compiled_graph = None
+
+
+def _get_graph_init_lock() -> asyncio.Lock:
+    """Instantiate asyncio.Lock lazily on the running loop (safe for FastAPI/CLI)."""
+    global _graph_init_lock
+    with _graph_init_lock_factory:
+        if _graph_init_lock is None:
+            _graph_init_lock = asyncio.Lock()
+    return _graph_init_lock
+
+
+async def init_graph_async():
+    """
+    Open SQLite and compile the graph once per process.
+    Must be awaited before any astream/ainvoke (FastAPI lifespan and CLI entry).
+
+    Note: LangGraph async execution requires AsyncSqliteSaver (sync SqliteSaver does not implement aget_tuple).
+    """
+    global _compiled_graph, _checkpoint_conn, compiled_graph
+    async with _get_graph_init_lock():
+        if _compiled_graph is not None:
+            return _compiled_graph
+        _checkpoint_conn = await aiosqlite.connect(CHECKPOINT_DB_PATH)
+        checkpointer = AsyncSqliteSaver(_checkpoint_conn)
+        _compiled_graph = builder.compile(checkpointer=checkpointer)
+        compiled_graph = _compiled_graph
+        return _compiled_graph
+
+
+def get_compiled_graph():
+    """Return the compiled graph after init_graph_async() has completed."""
+    if _compiled_graph is None:
+        raise RuntimeError("Call await init_graph_async() before using the graph (CLI startup or API lifespan).")
+    return _compiled_graph
 
 
 # ============================================================
@@ -805,6 +895,9 @@ compiled_graph = builder.compile(checkpointer=memory)
 # ============================================================
 
 async def _cli_loop() -> None:
+    await init_graph_async()
+    graph = get_compiled_graph()
+
     obs_enabled = any(arg in {"-obs", "--obs"} for arg in sys.argv[1:])
     set_observability_enabled(obs_enabled)
 
@@ -841,6 +934,7 @@ async def _cli_loop() -> None:
                 "task_plan": {},
                 "dispatch_targets": [],
                 "event_bus": [],
+                "artifacts": {},
                 "obs_usages": [],
                 "round_event_count": 0,
                 "final_response": None,
@@ -858,7 +952,7 @@ async def _cli_loop() -> None:
         turn_error: Exception | None = None
 
         try:
-            async for event in compiled_graph.astream(input_state, config, stream_mode="updates"):
+            async for event in graph.astream(input_state, config, stream_mode="updates"):
                 for node_name, values in event.items():
                     trace_entries.append({
                         "node": node_name,
