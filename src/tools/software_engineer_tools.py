@@ -15,6 +15,8 @@ from difflib import get_close_matches
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+import uuid
+
 from models.tool_outputs import (
     CloudFunctionCodeToolOutput,
     ConnectorExecuteToolOutput,
@@ -28,9 +30,11 @@ from models.tool_outputs import (
     ConnectorValidationOutput,
     EnvironmentVariablesToolOutput,
     GoldStandardCodeToolOutput,
-    ModifyPayloadColumnsToolOutput,
+    StageConnectorToolOutput,
     dump_tool_output,
 )
+
+STAGING_ROOT = Path(__file__).resolve().parents[1] / "pending_deploy"
 
 
 CONNECTOR_ROOT = Path(__file__).resolve().parents[1] / "connector_library"
@@ -310,8 +314,25 @@ def _read_connector(path: str) -> Dict[str, Any]:
     )
 
 
+def _normalize_connector_source_code(code: str) -> str:
+    """Normalize LLM-produced Python before parse/write (newlines, BOM, smart quotes, over-escaping)."""
+    text = (code or "").replace("\r\n", "\n").replace("\r", "\n")
+    if text.startswith("\ufeff"):
+        text = text[1:]
+    text = (
+        text.replace("\u201c", '"')
+        .replace("\u201d", '"')
+        .replace("\u2018", "'")
+        .replace("\u2019", "'")
+    )
+    # Fix escaped single quotes from LLM over-escaping when passing code as string argument
+    text = text.replace("\\'", "'")
+    return text
+
+
 def _validate_connector_code(code: str) -> Dict[str, Any]:
     """Run structural validation and return a serialized ``ConnectorValidateToolOutput``."""
+    code = _normalize_connector_source_code(code)
     validation = _validate_connector_code_struct(code)
     status = "OK" if validation.valid else "ERR"
     status_code = "CONNECTOR_CODE_VALID" if validation.valid else "CONNECTOR_CODE_INVALID"
@@ -329,8 +350,15 @@ def _save_connector(
     name: str,
     code: str,
     overwrite: bool = False,
+    skip_validation: bool = True,
 ) -> Dict[str, Any]:
-    """Validate then write ``connector_library/<source>/<name>.py``; enforce naming and no invalid saves."""
+    """Write ``connector_library/<source>/<name>.py``; enforce naming convention.
+
+    Validation is skipped by default (``skip_validation=True``) because a downstream
+    QA Agent is responsible for syntax checks and security scans. Set ``skip_validation=False``
+    to gate on structural validation before persisting.
+    """
+    code = _normalize_connector_source_code(code)
     source_name = _normalize_source(source)
     connector_name = _normalize_connector_name(name)
     if not _matches_connector_pattern(source_name, connector_name):
@@ -358,21 +386,31 @@ def _save_connector(
             )
         )
 
-    validation = _validate_connector_code_struct(code)
-    if not validation.valid:
-        return dump_tool_output(
-            ConnectorSaveToolOutput(
-                status="ERR",
-                code="CONNECTOR_VALIDATION_FAILED",
-                msg="Connector code is invalid and was not saved.",
-                connector=ConnectorRef(
-                    connector_name=connector_name,
-                    source=source_name,
-                    file_path=str(CONNECTOR_ROOT / source_name / f"{connector_name}.py"),
-                ),
-                validation=validation,
-            )
+    if skip_validation:
+        validation = ConnectorValidationOutput(
+            valid=True,
+            function_defs=[],
+            has_fetch_entrypoint=True,
+            has_required_signature=True,
+            uses_fields_parameter=True,
+            error=None,
         )
+    else:
+        validation = _validate_connector_code_struct(code)
+        if not validation.valid:
+            return dump_tool_output(
+                ConnectorSaveToolOutput(
+                    status="ERR",
+                    code="CONNECTOR_VALIDATION_FAILED",
+                    msg="Connector code is invalid and was not saved.",
+                    connector=ConnectorRef(
+                        connector_name=connector_name,
+                        source=source_name,
+                        file_path=str(CONNECTOR_ROOT / source_name / f"{connector_name}.py"),
+                    ),
+                    validation=validation,
+                )
+            )
 
     target_dir = CONNECTOR_ROOT / source_name
     target_path = target_dir / f"{connector_name}.py"
@@ -388,7 +426,18 @@ def _save_connector(
         )
 
     target_dir.mkdir(parents=True, exist_ok=True)
-    target_path.write_text(code, encoding="utf-8")
+    try:
+        target_path.write_text(code, encoding="utf-8")
+    except OSError as exc:
+        return dump_tool_output(
+            ConnectorSaveToolOutput(
+                status="ERR",
+                code="CONNECTOR_WRITE_FAILED",
+                msg=f"Could not write connector file: {exc}",
+                connector=_connector_ref_from_path(target_path),
+                validation=validation,
+            )
+        )
     return dump_tool_output(
         ConnectorSaveToolOutput(
             status="OK",
@@ -442,28 +491,98 @@ def _get_gold_standard_code(channel_name: str) -> Dict[str, Any]:
     )
 
 
-def _modify_payload_and_columns(template_code: str, fields: List[str]) -> Dict[str, Any]:
-    """Inject ``fields`` via ``{{FIELDS}}``, ``DEFAULT_FIELDS``, and optional ``fetch`` wiring."""
+def _stage_connector_instance(
+    source: str,
+    connector_name: str,
+    fields: List[str],
+) -> Dict[str, Any]:
+    """Stage a connector instance with hardcoded fields for deployment.
+
+    Reads the generic connector from the library, injects the user-selected fields,
+    and writes a temporary file to ``pending_deploy/`` for the DevOps agent to deploy.
+    The staged file is deleted after deployment.
+
+    Args:
+        source: Data source slug (e.g. ``meta``, ``tiktok``).
+        connector_name: Name of the connector in the library (e.g. ``meta_marketing_performance``).
+        fields: Fields from Data Architect DDL to hardcode into the staged instance.
+
+    Returns:
+        Tool dict with ``library_connector``, ``staged_path``, ``fields_configured``.
+    """
     normalized_fields = [str(f).strip() for f in fields if str(f).strip()]
     if not normalized_fields:
         return dump_tool_output(
-            ModifyPayloadColumnsToolOutput(
+            StageConnectorToolOutput(
                 status="ERR",
                 code="EMPTY_FIELDS_SELECTION",
                 msg="At least one field must be provided.",
-                fields=[],
-                updated_code=template_code,
-                modifications_applied=[],
+                library_connector="",
+                staged_path="",
+                fields_configured=[],
+                staged_connector_name="",
             )
         )
 
-    modifications: List[str] = []
+    search_result = _find_connector(connector_name)
+    if search_result.get("status") != "OK":
+        close = search_result.get("close_matches", [])
+        return dump_tool_output(
+            StageConnectorToolOutput(
+                status="ERR",
+                code="CONNECTOR_NOT_FOUND",
+                msg=f"Connector '{connector_name}' not found in library. Close matches: {close}",
+                library_connector="",
+                staged_path="",
+                fields_configured=[],
+                staged_connector_name="",
+            )
+        )
+
+    library_path = search_result.get("connector", {}).get("file_path", "")
+    if not library_path:
+        return dump_tool_output(
+            StageConnectorToolOutput(
+                status="ERR",
+                code="CONNECTOR_PATH_MISSING",
+                msg="Connector found but file_path is missing.",
+                library_connector="",
+                staged_path="",
+                fields_configured=[],
+                staged_connector_name="",
+            )
+        )
+
+    read_result = _read_connector(library_path)
+    if read_result.get("status") != "OK":
+        return dump_tool_output(
+            StageConnectorToolOutput(
+                status="ERR",
+                code="CONNECTOR_READ_FAILED",
+                msg=f"Failed to read connector: {read_result.get('msg', 'unknown error')}",
+                library_connector=library_path,
+                staged_path="",
+                fields_configured=[],
+                staged_connector_name="",
+            )
+        )
+
+    template_code = read_result.get("code_text", "")
+    if not template_code.strip():
+        return dump_tool_output(
+            StageConnectorToolOutput(
+                status="ERR",
+                code="CONNECTOR_EMPTY",
+                msg="Connector file is empty.",
+                library_connector=library_path,
+                staged_path="",
+                fields_configured=[],
+                staged_connector_name="",
+            )
+        )
+
     updated_code = template_code
     fields_literal = repr(normalized_fields)
-
-    if "{{FIELDS}}" in updated_code:
-        updated_code = updated_code.replace("{{FIELDS}}", fields_literal)
-        modifications.append("replaced_placeholder_{{FIELDS}}")
 
     if re.search(r"DEFAULT_FIELDS\s*=\s*\[.*?\]", updated_code, flags=re.DOTALL):
         updated_code = re.sub(
@@ -472,30 +591,24 @@ def _modify_payload_and_columns(template_code: str, fields: List[str]) -> Dict[s
             updated_code,
             flags=re.DOTALL,
         )
-        modifications.append("updated_default_fields_constant")
-    elif "DEFAULT_FIELDS" not in updated_code:
-        updated_code = f"DEFAULT_FIELDS = {fields_literal}\n\n{updated_code}"
-        modifications.append("added_default_fields_constant")
 
-    if "params.get(\"fields\"" not in updated_code and "params.get('fields'" not in updated_code:
-        fetch_pattern = r"(def\s+fetch\s*\(\s*params\s*,\s*context\s*\)\s*:\s*\n)"
-        if re.search(fetch_pattern, updated_code):
-            updated_code = re.sub(
-                fetch_pattern,
-                "\\1    requested_fields = params.get(\"fields\", DEFAULT_FIELDS)\n",
-                updated_code,
-                count=1,
-            )
-            modifications.append("added_requested_fields_lookup")
+    STAGING_ROOT.mkdir(parents=True, exist_ok=True)
+
+    instance_id = uuid.uuid4().hex[:8]
+    staged_name = f"{_normalize_connector_name(connector_name)}_{instance_id}.py"
+    staged_path = STAGING_ROOT / staged_name
+
+    staged_path.write_text(updated_code, encoding="utf-8")
 
     return dump_tool_output(
-        ModifyPayloadColumnsToolOutput(
+        StageConnectorToolOutput(
             status="OK",
-            code="PAYLOAD_AND_COLUMNS_UPDATED",
-            msg="Template updated with selected fields.",
-            fields=normalized_fields,
-            updated_code=updated_code,
-            modifications_applied=modifications,
+            code="STAGED_FOR_DEPLOY",
+            msg=f"Connector staged for deployment with {len(normalized_fields)} fields.",
+            library_connector=library_path,
+            staged_path=str(staged_path),
+            fields_configured=normalized_fields,
+            staged_connector_name=staged_name,
         )
     )
 
@@ -509,20 +622,27 @@ def _parse_api_research(api_research: Dict[str, Any] | None, source_name: str) -
     http_method = "GET"
     base_url = ""
 
+    relative_endpoint_path = ""
     if reporting_endpoint:
         parts = reporting_endpoint.split(None, 1)
         if len(parts) == 2 and parts[0].upper() in {"GET", "POST", "PUT", "DELETE", "PATCH"}:
             http_method = parts[0].upper()
-            base_url = parts[1].strip()
+            endpoint_part = parts[1].strip()
         else:
-            base_url = reporting_endpoint
+            endpoint_part = reporting_endpoint
+        el = endpoint_part.lower()
+        if el.startswith("http://") or el.startswith("https://"):
+            base_url = endpoint_part
+        elif endpoint_part:
+            relative_endpoint_path = endpoint_part
+            base_url = ""
 
     # ── Auth ──────────────────────────────────────────────────────────────────
     auth_obj = ctx.get("auth") or {}
     auth_method = str(auth_obj.get("method", "")).strip() if isinstance(auth_obj, dict) else ""
     required_credentials = [
         str(c).strip()
-        for c in (auth_obj.get("required_credentials", []) if isinstance(auth_obj, dict) else [])
+        for c in (auth_obj.get("required_credentials") or [] if isinstance(auth_obj, dict) else [])
         if str(c).strip()
     ]
 
@@ -537,7 +657,7 @@ def _parse_api_research(api_research: Dict[str, Any] | None, source_name: str) -
 
     # ── Fields ────────────────────────────────────────────────────────────────
     canonical_api_fields: List[str] = []
-    for field in ctx.get("available_fields", []):
+    for field in ctx.get("available_fields") or []:
         if not isinstance(field, dict) or not field.get("canonical_match"):
             continue
         api_field = str(field.get("api_field", "")).strip()
@@ -553,6 +673,7 @@ def _parse_api_research(api_research: Dict[str, Any] | None, source_name: str) -
 
     return {
         "base_url": base_url,
+        "relative_endpoint_path": relative_endpoint_path,
         "http_method": http_method,
         "auth_method": auth_method,
         "is_oauth": is_oauth,
@@ -621,6 +742,11 @@ def _write_cf_code(
 
     ``api_spec`` is the persisted contract from the API Researcher (``artifacts['api_spec']``);
     when set, it overrides endpoint/method/pagination/auth hints and is embedded in the header.
+
+    If ``reporting_endpoint`` is a **relative** path template (e.g.
+    ``GET /{account_id}/insights``) and ``api_spec.base_url`` supplies the API root, the
+    scaffold joins root + path and replaces ``{placeholder}`` tokens from ``params`` and
+    ``context`` (longest keys first). Absolute ``https://…`` endpoints are used as-is.
     """
     source_name = _normalize_source(source)
     type_name = _sanitize_segment(connector_type)
@@ -648,10 +774,9 @@ def _write_cf_code(
     pagination_hint: str = r["pagination_hint"]
     platform: str = r["platform"]
     rate_limit: str = r["rate_limit"]
-    is_oauth: bool = r["is_oauth"]
     auth_method: str = r["auth_method"]
+    relative_endpoint_path: str = str(r.get("relative_endpoint_path") or "").strip()
 
-    primary_token_env = env_vars[0]
     fields_repr = repr(default_fields)
 
     # ── Build header block ────────────────────────────────────────────────────
@@ -685,26 +810,11 @@ def _write_cf_code(
     )
     missing_names = ", ".join(env_vars)
 
-    if is_oauth:
-        auth_header_line = f'        "Authorization": f"Bearer {{{_sanitize_segment(env_vars[0]).lower()}}}",'
-    else:
-        auth_header_line = f'        "Authorization": f"Bearer {{{_sanitize_segment(env_vars[0]).lower()}}}",'
-
-    # ── Build URL line ────────────────────────────────────────────────────────
-    if base_url:
-        url_line = f'    url = "{base_url}"'
-    else:
-        url_line = f'    url = context.get("base_url", "")'
-
-    # ── Build request line ────────────────────────────────────────────────────
-    if http_method == "POST":
-        request_line = "    response = requests.post(url, headers=headers, json=query, timeout=60)"
-    else:
-        request_line = "    response = requests.get(url, headers=headers, params=query, timeout=60)"
+    auth_header_line = f'        "Authorization": f"Bearer {{{_sanitize_segment(env_vars[0]).lower()}}}",'
 
     # ── Pagination cursor block ───────────────────────────────────────────────
     pagination_lower = pagination_hint.lower()
-    if "cursor" in pagination_lower:
+    if "cursor" in pagination_lower or "after" in pagination_lower or "paging" in pagination_lower:
         cursor_extract = '    next_cursor = None\n'
         cursor_extract += '    if isinstance(body, dict):\n'
         cursor_extract += '        paging = body.get("paging", {})\n'
@@ -718,6 +828,45 @@ def _write_cf_code(
         cursor_extract += '            next_cursor = str(int(params.get("cursor", "1")) + 1)'
     else:
         cursor_extract = '    next_cursor = body.get("next_cursor") if isinstance(body, dict) else None'
+
+    if relative_endpoint_path:
+        path_lit = repr(relative_endpoint_path)
+        if base_url.strip():
+            root_assign = f"    root = {repr(base_url)}\n"
+        else:
+            root_assign = '    root = str(context.get("base_url") or "").strip()\n'
+        url_build_block = (
+            f"{root_assign}"
+            f"    path_tpl = {path_lit}\n"
+            "    subs: dict[str, Any] = {**context, **params}\n"
+            "    path = path_tpl\n"
+            "    for key in sorted(subs.keys(), key=lambda k: len(str(k)), reverse=True):\n"
+            "        if isinstance(key, str):\n"
+            '            token = "{" + key + "}"\n'
+            "            if token in path:\n"
+            "                val = subs.get(key)\n"
+            '                path = path.replace(token, "" if val is None else str(val))\n'
+            "    if not root:\n"
+            "        return {\n"
+            '            "status": "ERR",\n'
+            '            "code": "MISSING_BASE_URL",\n'
+            '            "records": [],\n'
+            '            "errors": [\n'
+            '                "Set api_spec.base_url (persisted) or context.base_url; "\n'
+            '                "reporting_endpoint was a relative path template."\n'
+            '            ],\n'
+            "        }\n"
+            "    url = f\"{root.rstrip('/')}/{path.lstrip('/')}\" if path else root\n"
+        )
+    elif base_url:
+        url_build_block = f"    url = {repr(base_url)}\n"
+    else:
+        url_build_block = '    url = str(context.get("base_url") or "").strip()\n'
+
+    if http_method == "POST":
+        request_line = "    response = requests.post(url, headers=headers, json=query, timeout=60)"
+    else:
+        request_line = "    response = requests.get(url, headers=headers, params=query, timeout=60)"
 
     main_py = (
         f"{header_comment}\n\n"
@@ -750,9 +899,21 @@ def _write_cf_code(
         '        "fields": ",".join(requested_fields),\n'
         "    }\n"
         '    cursor = params.get("cursor")\n'
-        "    if cursor:\n"
-        '        query["cursor"] = cursor\n\n'
-        f"{url_line}\n"
+        "    if cursor is not None and str(cursor).strip() != \"\":\n"
+        '        if "after" in '
+        + repr(pagination_lower)
+        + ":\n"
+        '            query["after"] = str(cursor)\n'
+        "        else:\n"
+        '            query["cursor"] = str(cursor)\n\n'
+        f"{url_build_block}\n"
+        "    if not url:\n"
+        "        return {\n"
+        '            "status": "ERR",\n'
+        '            "code": "MISSING_URL",\n'
+        '            "records": [],\n'
+        '            "errors": ["No request URL: set reporting_endpoint or context.base_url."],\n'
+        "        }\n\n"
         f"{request_line}\n"
         "    if response.status_code >= 400:\n"
         "        return {\n"

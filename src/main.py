@@ -530,10 +530,19 @@ async def api_researcher_node(state: AgentGraphState) -> dict:
         _invoke,
         default_payload,
     )
+    extra_artifacts: dict[str, Any] = {}
     if research_sidecar:
+        extra_artifacts.update(research_sidecar)
+    if node_out.get("event_bus"):
+        last = node_out["event_bus"][-1]
+        if last.get("id") == "api_researcher" and last.get("status") != "ERR":
+            payload = last.get("payload")
+            if payload:
+                extra_artifacts["api_research"] = payload
+    if extra_artifacts:
         merged = dict(node_out)
         art = dict(merged.get("artifacts") or {})
-        art.update(research_sidecar)
+        art.update(extra_artifacts)
         merged["artifacts"] = art
         return merged
     return node_out
@@ -570,6 +579,25 @@ async def data_architect_node(state: AgentGraphState) -> dict:
             "summary": "Data Architect failed to process the request.",
         },
     ).payload.model_dump()
+
+    base_instruction = (state.get("task_plan", {}) or {}).get("data_architect", "") or ""
+    segments: list[str] = []
+    if base_instruction.strip():
+        segments.append(base_instruction.strip())
+
+    artifacts = state.get("artifacts") or {}
+
+    api_research = artifacts.get("api_research")
+    if api_research:
+        segments.append(
+            "API_RESEARCH_CONTEXT (available_fields catalog from API Researcher — use for field types and names):\n"
+            f"{json.dumps(api_research, default=str)}"
+        )
+
+    merged_instruction = "\n\n".join(segments) if segments else base_instruction.strip()
+    if not merged_instruction.strip():
+        return {}
+
     node_out = await _run_specialist_node(
         state,
         "data_architect",
@@ -577,6 +605,7 @@ async def data_architect_node(state: AgentGraphState) -> dict:
         "   🏗️ [Data Architect working...]",
         _invoke,
         default_payload,
+        instruction_override=merged_instruction.strip(),
     )
     ddl = (ddl_sidecar.get("table_ddl") or "").strip()
     if not ddl and node_out.get("event_bus"):
@@ -590,16 +619,6 @@ async def data_architect_node(state: AgentGraphState) -> dict:
         merged["artifacts"] = {"table_ddl": ddl}
         return merged
     return node_out
-
-
-def _extract_event_payload(state: AgentGraphState, agent_id: str) -> str | None:
-    """Return the JSON-serialized payload of a successful LOL from ``agent_id`` in the event_bus."""
-    for event in state.get("event_bus", []):
-        if event.get("id") == agent_id and event.get("status") != "ERR":
-            payload = event.get("payload")
-            if payload:
-                return json.dumps(payload, default=str)
-    return None
 
 
 async def software_engineer_node(state: AgentGraphState) -> dict:
@@ -644,27 +663,21 @@ async def software_engineer_node(state: AgentGraphState) -> dict:
     if base_instruction.strip():
         segments.append(base_instruction.strip())
 
-    research_json = _extract_event_payload(state, "api_researcher")
-    if research_json:
+    artifacts = state.get("artifacts") or {}
+
+    api_research = artifacts.get("api_research")
+    if api_research:
         segments.append(
             "API_RESEARCH_CONTEXT (APIResearcherPayload — forward to write_cf_code as api_research):\n"
-            f"{research_json}"
+            f"{json.dumps(api_research, default=str)}"
         )
 
-    schema_json = _extract_event_payload(state, "data_architect")
-    if schema_json:
+    table_ddl = artifacts.get("table_ddl")
+    if isinstance(table_ddl, str) and table_ddl.strip():
         segments.append(
-            "DATA_ARCHITECT_CONTEXT (DataArchitectPayload — target dataset and DDL for the connector):\n"
-            f"{schema_json}"
+            "DATA_ARCHITECT_CONTEXT (table DDL for the connector's BigQuery destination):\n"
+            f"{table_ddl.strip()}"
         )
-    else:
-        persisted_ddl = (state.get("artifacts") or {}).get("table_ddl")
-        if isinstance(persisted_ddl, str) and persisted_ddl.strip():
-            segments.append(
-                "PERSISTED_ARTIFACT table_ddl (from a prior turn; event_bus was cleared — "
-                "write_cf_code receives this via runtime deps.artifacts; excerpt:\n"
-                f"{persisted_ddl.strip()[:8000]}"
-            )
 
     merged_instruction = "\n\n".join(segments) if segments else base_instruction.strip()
     if not merged_instruction.strip():

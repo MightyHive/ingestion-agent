@@ -24,7 +24,7 @@ from .tool_outputs import (
     ConnectorValidateToolOutput,
     ConnectorSaveToolOutput,
     GoldStandardCodeToolOutput,
-    ModifyPayloadColumnsToolOutput,
+    StageConnectorToolOutput,
     CloudFunctionCodeToolOutput,
     EnvironmentVariablesToolOutput,
     ConnectorRunResult,

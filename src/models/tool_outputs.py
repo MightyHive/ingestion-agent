@@ -199,19 +199,21 @@ class GoldStandardCodeToolOutput(ToolOutput):
     )
 
 
-class ModifyPayloadColumnsToolOutput(ToolOutput):
-    """Response for injecting selected fields into template code."""
+class StageConnectorToolOutput(ToolOutput):
+    """Response for staging a connector instance with user-selected fields for deployment."""
 
-    fields: List[str] = Field(
-        default_factory=list,
-        description="Requested source fields/columns selected by user.",
+    library_connector: str = Field(
+        description="Path to the generic connector in the permanent library.",
     )
-    updated_code: str = Field(
-        description="Connector code after payload/fields injection.",
+    staged_path: str = Field(
+        description="Path to the staged instance in pending_deploy/ (temporary, deleted after deploy).",
     )
-    modifications_applied: List[str] = Field(
+    fields_configured: List[str] = Field(
         default_factory=list,
-        description="List of deterministic modifications applied to template code.",
+        description="Fields hardcoded into the staged instance from Data Architect DDL.",
+    )
+    staged_connector_name: str = Field(
+        description="Name of the staged connector file (without path).",
     )
 
 

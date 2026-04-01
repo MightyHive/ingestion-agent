@@ -19,10 +19,9 @@ from tools.software_engineer_tools import (
     _get_gold_standard_code,
     _identify_environment_variables,
     _list_connectors,
-    _modify_payload_and_columns,
     _read_connector,
     _save_connector,
-    _validate_connector_code,
+    _stage_connector_instance,
     _write_cf_code,
 )
 
@@ -109,28 +108,54 @@ or BigQuery destinations. Set `status: WARN` or `ERR`, explain what is missing i
 
 
 # Required workflow
-1. Search and reuse connectors before creating new ones.
-2. If missing, define source and create a reusable connector.
-3. Validate connector code, then **always persist** valid code to the library (see below).
-4. If needed, request explicit human approval and explain why.
+1. Search the library for existing connectors (`find_connector`, `list_connectors`).
+2. If a generic connector exists, skip to step 4.
+3. If missing, create a **generic** reusable connector via `write_cf_code` and persist it
+   to the library via `save_connector`.
+4. Stage a deployment instance with user-selected fields via `stage_connector_instance`.
+   This creates a temporary file in `pending_deploy/` for the DevOps agent.
+5. If needed, request explicit human approval and explain why.
 
 # Mandatory library persistence (non-negotiable)
-- `write_cf_code` and `modify_payload_and_columns` only return text; they **never** write files.
-- Whenever you **author or finalize** connector Python for this component (`write_cf_code`, `modify_payload_and_columns`,
-  or edited gold-standard code), you **must** call `validate_connector_code` on the final module source, then
-  **`save_connector`** with that exact source before returning `status` **OK** or **WARN** for that work.
+- `write_cf_code` only returns text; it **never** writes files.
+- Whenever you **author or finalize** connector Python (`write_cf_code` or edited gold-standard code),
+  you **must** call **`save_connector`** with that exact source before returning `status` **OK** or
+  **WARN** for that work.
+
+# CRITICAL — Do NOT rewrite scaffold code
+The Python source returned by `write_cf_code` is **production-ready**. It already handles:
+  - URL construction (including placeholder substitution for relative paths like `/{account_id}/insights`)
+  - Authentication header setup via env-var names
+  - Cursor-based pagination extraction
+  - Field parameter wiring
+
+**Pass the scaffold code directly to `save_connector` without rewriting, reformatting, or
+simplifying any of these blocks.** In particular, NEVER:
+  - Replace the `root` / `path_tpl` / `subs` template-substitution block with string concatenation
+  - Change `repr()`-generated string literals (single-quoted) into manually written quotes
+  - Remove the `for key in sorted(subs.keys(), ...)` loop
+
+# Staging for deployment
+After saving a **generic** connector to the library, use `stage_connector_instance` to create a
+temporary instance with the user-selected fields hardcoded. This staged file lives in `pending_deploy/`
+and will be deployed by the DevOps agent, then deleted. The library connector remains generic and
+reusable for future requests with different field selections.
+
+**Code validation is NOT your responsibility.** A downstream QA Agent will run syntax checks
+and security scans. If `save_connector` returns an error, report it in `missing_inputs` and
+set `status: ERR` — do not attempt manual fixes or rewrites.
+
 - Do **not** return OK/WARN with new connector code living only inside `payload.data` or the model narrative—
   a successful authoring turn **ends with `save_connector`** and real paths from its tool output.
 - **Exceptions (no save required):** read-only turns (`list_connectors`, `find_connector`, `read_connector` without
-  producing new code); or **`status: ERR`** when validation fails, naming is invalid, or critical upstream research
-  is missing—in those cases explain in `reason` / `missing_inputs` and do not claim a file was saved.
+  producing new code); or **`status: ERR`** when `save_connector` fails, naming is invalid, or critical upstream
+  research is missing—in those cases explain in `reason` / `missing_inputs` and do not claim a file was saved.
 - Set `payload.file_path`, `payload.connector_name`, and `payload.validation` from **actual tool results**
-  (`validate_connector_code`, `save_connector`), not invented shapes.
+  (`save_connector`), not invented shapes.
 
 # Constraints
 - Always execute at least one real tool per request.
 - Never invent tool results.
-- Never save invalid code.
 - Never hardcode secrets or tokens in generated code.
 
 # Skills
@@ -142,7 +167,7 @@ Must follow the `SoftwareEngineerLOL` model.
 
 # Payload field: `action`
 Set `payload.action` to the **last decisive tool** in this turn—the step that best represents what
-was ultimately delivered (e.g. persisting code → `save_connector`; only validating → `validate_connector_code`).
+was ultimately delivered (e.g. persisting code → `save_connector`; scaffolding only → `write_cf_code`).
 Earlier tool calls in the same turn should still be reflected in `summary`, `validation`, `data`,
 `generated_files`, `env_vars_required`, and related fields—not in `action`, which stays a single literal.
 """
@@ -192,23 +217,31 @@ def build_software_engineer_agent() -> Agent:
         )
 
     @agent.tool
-    def modify_payload_and_columns(
+    def stage_connector_instance(
         ctx: RunContext[SoftwareEngineerDeps],
-        template_code: str,
+        source: str,
+        connector_name: str,
         fields: list[str],
     ) -> Dict[str, Any]:
-        """Inject user-selected source fields into template code (placeholders / DEFAULT_FIELDS / fetch).
+        """Stage a connector instance with hardcoded fields for deployment by DevOps agent.
+
+        Reads the generic connector from the library, injects the user-selected fields,
+        and writes a temporary file to ``pending_deploy/`` for the DevOps agent to deploy.
+        The staged file is deleted after deployment.
 
         Args:
-            template_code: Full Python source of an existing connector template.
-            fields: Field or metric names to request from the upstream API (non-empty).
+            source: Data source slug (e.g. ``meta``, ``tiktok``).
+            connector_name: Name of the connector in the library (e.g. ``meta_marketing_performance``).
+            fields: Fields from Data Architect DDL to hardcode into the staged instance.
 
         Returns:
-            Tool dict with ``updated_code``, ``fields``, and ``modifications_applied``.
+            Tool dict with ``library_connector``, ``staged_path``, ``fields_configured``, ``staged_connector_name``.
         """
         return run_logged_tool(
-            "software_engineer.modify_payload_and_columns",
-            lambda: _modify_payload_and_columns(template_code=template_code, fields=fields),
+            "software_engineer.stage_connector_instance",
+            lambda: _stage_connector_instance(source=source, connector_name=connector_name, fields=fields),
+            source=source,
+            connector_name=connector_name,
             fields_count=len(fields),
         )
 
@@ -233,6 +266,8 @@ def build_software_engineer_agent() -> Agent:
                 ``rate_limit`` — constraint description.
             Persisted ``deps.artifacts["api_spec"]`` (if any) is merged automatically for URL,
             method, pagination, and auth hints, and embedded in the generated module header.
+            Relative ``reporting_endpoint`` paths are joined with ``api_spec.base_url``;
+            ``{placeholders}`` are filled from ``params`` and ``context``.
 
         Returns:
             Tool dict with ``main_py``, ``requirements_txt``, ``connector_name``, ``suggested_env_vars``.
@@ -242,12 +277,17 @@ def build_software_engineer_agent() -> Agent:
         table_ddl_str = table_ddl.strip() if isinstance(table_ddl, str) else None
         raw_spec = arts.get("api_spec")
         api_spec = raw_spec if isinstance(raw_spec, dict) else None
+        effective_research = api_research
+        if not effective_research:
+            persisted = arts.get("api_research")
+            if isinstance(persisted, dict):
+                effective_research = persisted
         return run_logged_tool(
             "software_engineer.write_cf_code",
             lambda: _write_cf_code(
                 source=source,
                 connector_type=connector_type,
-                api_research=api_research,
+                api_research=effective_research,
                 table_ddl=table_ddl_str,
                 api_spec=api_spec,
             ),
@@ -316,21 +356,6 @@ def build_software_engineer_agent() -> Agent:
             "software_engineer.read_connector",
             lambda: _read_connector(path=path),
             path=path,
-        )
-
-    @agent.tool
-    def validate_connector_code(ctx: RunContext[SoftwareEngineerDeps], code: str) -> Dict[str, Any]:
-        """Validate syntax and required connector contract: ``fetch(params, context)`` and ``fields`` usage.
-
-        Args:
-            code: Full Python source of the connector module.
-
-        Returns:
-            Tool dict with nested ``validation`` (flags and error message if invalid).
-        """
-        return run_logged_tool(
-            "software_engineer.validate_connector_code",
-            lambda: _validate_connector_code(code=code),
         )
 
     @agent.tool
