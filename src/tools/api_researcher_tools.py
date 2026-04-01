@@ -15,6 +15,7 @@ from models.tool_outputs import (
     SchemaField,
     SearchResult,
     SearchWebOutput,
+    ToolOutput,
 )
 
 
@@ -493,3 +494,33 @@ def _analyze_json_schema(json_str: str) -> AnalyzeJsonSchemaOutput:
             fields=[],
             field_count=0,
         )
+
+
+def apply_save_api_contract(
+    artifact_sidecar: dict[str, Any] | None,
+    base_url: str,
+    auth_type: str,
+    pagination: str,
+    method: str,
+    headers_required: list[str],
+) -> ToolOutput:
+    """Write ``api_spec`` into ``artifact_sidecar`` when the graph wired a sidecar dict."""
+    spec = {
+        "base_url": (base_url or "").strip(),
+        "auth_type": (auth_type or "").strip(),
+        "pagination": (pagination or "").strip(),
+        "method": (method or "").strip().upper(),
+        "headers_required": [str(h).strip() for h in (headers_required or []) if str(h).strip()],
+    }
+    if artifact_sidecar is not None:
+        artifact_sidecar["api_spec"] = spec
+        return ToolOutput(
+            status="OK",
+            code="API_SPEC_SAVED",
+            msg="Persisted api_spec to session artifacts for the Software Engineer.",
+        )
+    return ToolOutput(
+        status="WARN",
+        code="NO_ARTIFACT_SIDECAR",
+        msg="artifact_sidecar not configured; api_spec was not persisted.",
+    )

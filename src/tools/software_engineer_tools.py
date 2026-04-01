@@ -564,11 +564,52 @@ def _parse_api_research(api_research: Dict[str, Any] | None, source_name: str) -
     }
 
 
+def _format_api_spec_block(api_spec: Dict[str, Any] | None) -> str:
+    """Human-readable block for generated module header (paired with Bronze DDL)."""
+    if not api_spec or not isinstance(api_spec, dict):
+        return ""
+    lines = [
+        "API SPECIFICATIONS (persisted contract):",
+        f"  Base URL: {api_spec.get('base_url', '')}",
+        f"  Auth type: {api_spec.get('auth_type', '')}",
+        f"  Pagination: {api_spec.get('pagination', '')}",
+        f"  HTTP method: {api_spec.get('method', '')}",
+    ]
+    hrs = api_spec.get("headers_required")
+    if isinstance(hrs, list) and hrs:
+        lines.append(f"  Headers required: {', '.join(str(h) for h in hrs)}")
+    else:
+        lines.append("  Headers required: (none beyond auth)")
+    return "\n".join(lines)
+
+
+def _apply_api_spec_overrides(
+    parsed: Dict[str, Any],
+    api_spec: Dict[str, Any] | None,
+) -> None:
+    """Prefer explicit ``api_spec`` fields over inferred ``api_research`` hints when present."""
+    if not api_spec or not isinstance(api_spec, dict):
+        return
+    bu = str(api_spec.get("base_url") or "").strip()
+    if bu:
+        parsed["base_url"] = bu
+    m = str(api_spec.get("method") or "").strip().upper()
+    if m in {"GET", "POST", "PUT", "DELETE", "PATCH"}:
+        parsed["http_method"] = m
+    pag = str(api_spec.get("pagination") or "").strip()
+    if pag:
+        parsed["pagination_hint"] = pag
+    at = str(api_spec.get("auth_type") or "").strip()
+    if at:
+        parsed["auth_method"] = at
+
+
 def _write_cf_code(
     source: str,
     connector_type: str,
     api_research: Dict[str, Any] | None = None,
     table_ddl: str | None = None,
+    api_spec: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Generate ``main_py`` + ``requirements_txt`` scaffold from API research context.
 
@@ -577,6 +618,9 @@ def _write_cf_code(
 
     ``table_ddl`` is optional persisted Bronze DDL from LangGraph ``artifacts`` when the
     current turn's ``event_bus`` no longer carries the Data Architect payload.
+
+    ``api_spec`` is the persisted contract from the API Researcher (``artifacts['api_spec']``);
+    when set, it overrides endpoint/method/pagination/auth hints and is embedded in the header.
     """
     source_name = _normalize_source(source)
     type_name = _sanitize_segment(connector_type)
@@ -596,6 +640,7 @@ def _write_cf_code(
         )
 
     r = _parse_api_research(api_research, source_name)
+    _apply_api_spec_overrides(r, api_spec)
     base_url: str = r["base_url"]
     http_method: str = r["http_method"]
     env_vars: List[str] = r["env_vars"]
@@ -625,6 +670,9 @@ def _write_cf_code(
         if len(ddl_text) > 6000:
             ddl_text = ddl_text[:6000] + "\n... [truncated]"
         header_comment += f"\n\nBronze DDL (persisted from Data Architect):\n{ddl_text}"
+    spec_block = _format_api_spec_block(api_spec)
+    if spec_block:
+        header_comment += f"\n\n{spec_block}"
     header_comment += '\n"""'
 
     # ── Build auth block ──────────────────────────────────────────────────────

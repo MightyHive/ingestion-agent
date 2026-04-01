@@ -73,11 +73,19 @@ Strings returned by `write_cf_code` alone are never sufficient: the library is t
 Your instruction may be enriched with structured context blocks produced by other agents.
 Look for the labelled sections described below and use them as indicated.
 
+## Persistent ``deps.artifacts['api_spec']`` (canonical API contract)
+When present, this is the **authoritative** technical contract for connector generation:
+base URL, auth type, pagination, HTTP method, and required headers. **Rely on it** for
+endpoint and request semantics—do not infer URLs, methods, or pagination from chat prose
+or stale conversation context. Still pass ``API_RESEARCH_CONTEXT`` into ``write_cf_code``
+as ``api_research`` when you have it (field catalog, platform metadata); ``write_cf_code``
+merges ``api_spec`` overrides with that payload.
+
 ## API_RESEARCH_CONTEXT (`APIResearcherPayload`)
-Contains the API Researcher's findings: `reporting_endpoint`, `auth`, `available_fields`,
-`pagination`, `platform`, `rate_limit`. Forward these fields as the `api_research` dict
-to `write_cf_code` — the tool parses them automatically.
-Propagate any `missing_inputs` from the research to your own `missing_inputs`.
+Structured field catalog and platform metadata from the API Researcher. Forward as the
+`api_research` dict to `write_cf_code` when available. Endpoint/method/pagination should
+match ``artifacts['api_spec']`` when both exist; treat discrepancies as a warning in
+``missing_inputs``.
 
 ## DATA_ARCHITECT_CONTEXT (`DataArchitectPayload`)
 Contains the Data Architect's BigQuery schema decision: `dataset_target` (e.g.
@@ -91,8 +99,9 @@ Contains the Data Architect's BigQuery schema decision: `dataset_target` (e.g.
 ## Runtime ``deps.artifacts`` (same session, prior turns)
 The graph may inject ``deps.artifacts["table_ddl"]`` when the turn-local ``event_bus`` no longer
 contains the Data Architect LOL (e.g. Software Engineer runs alone on a follow-up turn).
-Always pass this into ``write_cf_code`` implicitly via the tool implementation: the scaffold
-embeds the DDL in the module header when present.
+It may also inject ``deps.artifacts["api_spec"]`` from the API Researcher. The
+``write_cf_code`` tool reads both automatically—ensure upstream agents have persisted them
+before you claim a complete connector.
 
 **When both contexts are absent:** do NOT fabricate endpoints, auth flows, field names,
 or BigQuery destinations. Set `status: WARN` or `ERR`, explain what is missing in
@@ -222,12 +231,17 @@ def build_software_engineer_agent() -> Agent:
                 ``pagination`` — ``"cursor-based (paging.after)"``.
                 ``platform`` — ``"Meta Marketing API"``.
                 ``rate_limit`` — constraint description.
+            Persisted ``deps.artifacts["api_spec"]`` (if any) is merged automatically for URL,
+            method, pagination, and auth hints, and embedded in the generated module header.
 
         Returns:
             Tool dict with ``main_py``, ``requirements_txt``, ``connector_name``, ``suggested_env_vars``.
         """
-        table_ddl = (ctx.deps.artifacts or {}).get("table_ddl")
+        arts = ctx.deps.artifacts or {}
+        table_ddl = arts.get("table_ddl")
         table_ddl_str = table_ddl.strip() if isinstance(table_ddl, str) else None
+        raw_spec = arts.get("api_spec")
+        api_spec = raw_spec if isinstance(raw_spec, dict) else None
         return run_logged_tool(
             "software_engineer.write_cf_code",
             lambda: _write_cf_code(
@@ -235,6 +249,7 @@ def build_software_engineer_agent() -> Agent:
                 connector_type=connector_type,
                 api_research=api_research,
                 table_ddl=table_ddl_str,
+                api_spec=api_spec,
             ),
             source=source,
             connector_type=connector_type,

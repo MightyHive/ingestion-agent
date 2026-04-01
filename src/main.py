@@ -475,6 +475,8 @@ async def coordinator_node(state: AgentGraphState) -> dict:
 
 async def api_researcher_node(state: AgentGraphState) -> dict:
     """Invoke the API Researcher agent and return a LOL event."""
+    research_sidecar: dict[str, Any] = {}
+
     async def _invoke(prompt: str) -> tuple[dict, dict]:
             # Enrich instruction with known platform context if applicable
             from agents.api_researcher_agent import _resolve_platform
@@ -495,6 +497,7 @@ async def api_researcher_node(state: AgentGraphState) -> dict:
                 deps=APIResearcherDeps(
                     project_id=settings.PROJECT_ID_LLM or "",
                     location=settings.LOCATION,
+                    artifact_sidecar=research_sidecar,
                 ),
             )
             return result.output.model_dump(), extract_usage(result)
@@ -519,7 +522,7 @@ async def api_researcher_node(state: AgentGraphState) -> dict:
         },
     ).payload.model_dump()
 
-    return await _run_specialist_node(
+    node_out = await _run_specialist_node(
         state,
         "api_researcher",
         "API Researcher",
@@ -527,6 +530,13 @@ async def api_researcher_node(state: AgentGraphState) -> dict:
         _invoke,
         default_payload,
     )
+    if research_sidecar:
+        merged = dict(node_out)
+        art = dict(merged.get("artifacts") or {})
+        art.update(research_sidecar)
+        merged["artifacts"] = art
+        return merged
+    return node_out
 
 async def data_architect_node(state: AgentGraphState) -> dict:
     """Invoke the Data Architect agent and return a LOL event."""

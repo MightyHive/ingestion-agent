@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
@@ -17,6 +17,7 @@ from tools.api_researcher_tools import (
     _analyze_json_schema,
     _read_documentation_url,
     _search_web,
+    apply_save_api_contract,
 )
 
 
@@ -26,6 +27,8 @@ class APIResearcherDeps:
 
     project_id: str
     location: str
+    #: Mutable dict tools may write into; merged into graph ``artifacts`` (e.g. ``api_spec``).
+    artifact_sidecar: dict[str, Any] | None = None
 
 _SKILLS_DIR = Path(__file__).resolve().parents[1] / "skills"
 
@@ -206,6 +209,14 @@ List anything that limits accuracy, e.g.:
  
 # Output
 Must follow the APIResearcherLOL model exactly.
+ 
+ 
+# Artifact handoff (mandatory)
+Before you finish your turn, you **must** call ``save_api_contract`` once with the technical
+contract for the API you researched: ``base_url``, ``auth_type``, ``pagination`` strategy,
+HTTP ``method``, and ``headers_required``. This persists ``api_spec`` into session artifacts so
+the Software Engineer can generate connector code without relying on volatile chat context.
+Fill every parameter from documentation (use empty string or ``[]`` only when truly unknown).
 """
  
  
@@ -276,10 +287,10 @@ def build_api_researcher_agent() -> Agent:
     @agent.tool
     def analyze_json_schema(ctx: RunContext[APIResearcherDeps], json_str: str) -> Dict[str, Any]:
         """Infer BigQuery field names and types from a JSON API response sample.
- 
+
         Args:
             json_str: Raw JSON string from an API response (object or array).
- 
+
         Returns:
             Tool dict with status, fields (api_field, type, sample), and field_count.
         """
@@ -287,7 +298,44 @@ def build_api_researcher_agent() -> Agent:
             "api_researcher.analyze_json_schema",
             lambda: dump_tool_output(_analyze_json_schema(json_str=json_str)),
         )
- 
+
+    @agent.tool
+    def save_api_contract(
+        ctx: RunContext[APIResearcherDeps],
+        base_url: str,
+        auth_type: str,
+        pagination: str,
+        method: str,
+        headers_required: List[str],
+    ) -> Dict[str, Any]:
+        """Persist a normalized API contract to session artifacts for the Software Engineer.
+
+        Args:
+            base_url: Fully qualified base URL or path prefix for reporting requests.
+            auth_type: Auth mechanism (e.g. OAuth 2.0 bearer, API key header).
+            pagination: How the API pages results (cursor, offset, etc.).
+            method: Primary HTTP method for the reporting/read endpoint (GET, POST, ...).
+            headers_required: Header names the client must send (besides auth), if any.
+
+        Returns:
+            Serialized ``ToolOutput`` indicating whether ``api_spec`` was written to the sidecar.
+        """
+        return run_logged_tool(
+            "api_researcher.save_api_contract",
+            lambda: dump_tool_output(
+                apply_save_api_contract(
+                    ctx.deps.artifact_sidecar,
+                    base_url=base_url,
+                    auth_type=auth_type,
+                    pagination=pagination,
+                    method=method,
+                    headers_required=headers_required,
+                )
+            ),
+            base_url_len=len(base_url or ""),
+            method=method,
+        )
+
     return agent
  
  
