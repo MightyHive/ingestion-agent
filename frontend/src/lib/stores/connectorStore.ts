@@ -22,6 +22,29 @@ function isRecord(x: unknown): x is Record<string, unknown> {
   return typeof x === "object" && x !== null
 }
 
+/**
+ * Keep the first item for each key; later duplicates are dropped (order preserved).
+ */
+function dedupeByStableKey<T>(items: readonly T[], keyOf: (item: T) => string): T[] {
+  const seen = new Set<string>()
+  const out: T[] = []
+  for (const item of items) {
+    const key = keyOf(item)
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(item)
+  }
+  return out
+}
+
+function dedupeColumnsByDomainId(columns: Column[]): Column[] {
+  return dedupeByStableKey(columns, (c) => c.id)
+}
+
+function dedupeFieldIdList(ids: string[]): string[] {
+  return dedupeByStableKey(ids, (s) => s)
+}
+
 /** Append decoded text, split on SSE event boundaries; only parse complete `data:` JSON lines. */
 function feedSseBuffer(buffer: string, chunk: string): { buffer: string; events: unknown[] } {
   buffer += chunk
@@ -80,6 +103,10 @@ export interface SchemaColumn {
   description?: string
 }
 
+function dedupeSchemaColumnsByFieldName(columns: SchemaColumn[]): SchemaColumn[] {
+  return dedupeByStableKey(columns, (c) => c.name)
+}
+
 export interface SchemaProposal {
   tableName: string
   columns: SchemaColumn[]
@@ -89,7 +116,7 @@ export interface SchemaProposal {
 /** Map FastAPI ``schema_preview`` / BQSchemaField rows into store columns. */
 function schemaColumnsFromUiTrigger(raw: unknown): SchemaColumn[] {
   if (!Array.isArray(raw)) return []
-  return raw.map((item): SchemaColumn => {
+  const mapped = raw.map((item): SchemaColumn => {
     if (!isRecord(item)) {
       return { name: "", original: "", type: "STRING", mode: "NULLABLE" }
     }
@@ -107,6 +134,7 @@ function schemaColumnsFromUiTrigger(raw: unknown): SchemaColumn[] {
       description: typeof item.description === "string" ? item.description : undefined,
     }
   })
+  return dedupeSchemaColumnsByFieldName(mapped)
 }
 
 const initialState = {
@@ -152,13 +180,20 @@ export const useConnectorStore = create<ConnectorStore>((set, get) => ({
   addCompletedNode: (node) =>
     set((state) => ({ completedNodes: [...state.completedNodes, node] })),
 
-  setFields: (fields) => set({ fields, isInvestigating: false }),
+  setFields: (fields) => set({ fields: dedupeColumnsByDomainId(fields), isInvestigating: false }),
 
   setInvestigationError: (error) => set({ investigationError: error, isInvestigating: false }),
 
-  setSelectedFields: (fields) => set({ selectedFields: fields }),
+  setSelectedFields: (fields) => set({ selectedFields: dedupeFieldIdList(fields) }),
 
-  setSchemaProposal: (proposal) => set({ schemaProposal: proposal, isProposing: false }),
+  setSchemaProposal: (proposal) =>
+    set({
+      schemaProposal: {
+        ...proposal,
+        columns: dedupeSchemaColumnsByFieldName(proposal.columns),
+      },
+      isProposing: false,
+    }),
 
   setProposing: (value) => set({ isProposing: value }),
 
@@ -211,7 +246,7 @@ export const useConnectorStore = create<ConnectorStore>((set, get) => ({
               isRecord(utRaw.data)
             ) {
               const mapped = columnsFromUiTriggerData(utRaw.data)
-              if (mapped.length) fields = mapped
+              if (mapped.length) fields = dedupeColumnsByDomainId(mapped)
             }
             return {
               isInvestigating: false,
@@ -271,7 +306,7 @@ export const useConnectorStore = create<ConnectorStore>((set, get) => ({
       }
       set({
         investigationError:
-          e instanceof Error ? e.message : "Error al investigar la API",
+          e instanceof Error ? e.message : "Failed to investigate the API",
         isInvestigating: false,
         abortController: null,
       })
@@ -388,7 +423,7 @@ export const useConnectorStore = create<ConnectorStore>((set, get) => ({
       }
       set({
         proposalError:
-          e instanceof Error ? e.message : "Error al generar el schema",
+          e instanceof Error ? e.message : "Failed to generate schema",
         isProposing: false,
         abortController: null,
       })

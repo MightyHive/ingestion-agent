@@ -11,7 +11,7 @@ export default function SchemaPage() {
   const [copied, setCopied] = useState(false)
 
   function handleApprove() {
-    // TODO: llamar al back para aprobar y continuar al Scheduler
+    // TODO: call backend to approve and continue to scheduler
     router.push("/scheduler")
   }
 
@@ -26,12 +26,11 @@ export default function SchemaPage() {
     setTimeout(() => setCopied(false), 2000)
   }
 
-  // Sin schema todavía → volver
   if (!isProposing && !schemaProposal && !proposalError) {
     return (
       <div className="flex flex-col items-center justify-center gap-4 py-20">
         <span className="material-symbols-outlined text-4xl text-on-surface-variant">schema</span>
-        <p className="text-sm text-on-surface-variant">There's no schema generated.</p>
+        <p className="text-sm text-on-surface-variant">There is no schema generated.</p>
         <button onClick={() => router.push("/selectors")} className="text-sm font-semibold text-primary hover:underline">
           Go to Selectors
         </button>
@@ -73,14 +72,10 @@ export default function SchemaPage() {
         </div>
       )}
 
-      {/* Propuesta */}
       {schemaProposal && (
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6">
 
-          {/* Panel principal — tabla de columnas */}
           <div className="flex flex-col gap-4">
-
-            {/* Header tabla */}
             <div className="bg-card rounded-2xl border border-border p-5 flex flex-col gap-4">
               <div className="flex items-center justify-between">
                 <div>
@@ -104,7 +99,6 @@ export default function SchemaPage() {
                 </div>
               </div>
 
-              {/* Tabla de columnas */}
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
@@ -116,6 +110,7 @@ export default function SchemaPage() {
                     </tr>
                   </thead>
                   <tbody>
+                    {/* Row key is BigQuery field name; duplicates are removed in Zustand before render. */}
                     {schemaProposal.columns.map((col) => (
                       <tr key={col.name} className="border-b border-border/50 hover:bg-muted/30 transition-colors">
                         <td className="py-2 px-2">
@@ -141,7 +136,6 @@ export default function SchemaPage() {
               </div>
             </div>
 
-            {/* DDL Preview */}
             <div className="bg-card rounded-2xl border border-border overflow-hidden">
               <div className="flex items-center justify-between px-5 py-3 border-b border-border bg-muted/30">
                 <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider">
@@ -154,7 +148,7 @@ export default function SchemaPage() {
                   <span className="material-symbols-outlined text-sm">
                     {copied ? "check" : "content_copy"}
                   </span>
-                  {copied ? "Copiado" : "Copiar"}
+                  {copied ? "Copied" : "Copy"}
                 </button>
               </div>
               <pre className="p-5 text-xs font-mono text-on-surface overflow-x-auto leading-relaxed bg-slate-950 text-slate-100">
@@ -163,12 +157,10 @@ export default function SchemaPage() {
             </div>
           </div>
 
-          {/* Sidebar */}
           <div className="flex flex-col gap-4">
-            {/* Info */}
             <div className="bg-card rounded-2xl border border-border p-5 flex flex-col gap-3">
               <div>
-                <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-1">Conector</p>
+                <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-1">Connector</p>
                 <p className="text-sm font-semibold text-on-surface">{connectorName}</p>
               </div>
               <div>
@@ -181,7 +173,6 @@ export default function SchemaPage() {
               </div>
             </div>
 
-            {/* Automation insight */}
             <div className="bg-card rounded-2xl border border-border p-5">
               <div className="flex items-start gap-2 mb-2">
                 <span className="material-symbols-outlined text-primary text-base mt-0.5">smart_toy</span>
@@ -194,7 +185,6 @@ export default function SchemaPage() {
               </p>
             </div>
 
-            {/* Aprobar / Rechazar */}
             <div className="flex flex-col gap-2">
               <button
                 onClick={handleApprove}

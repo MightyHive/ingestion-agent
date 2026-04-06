@@ -74,6 +74,12 @@ KNOWN_PLATFORMS: dict[str, dict[str, Any] | str] = {
         "docs_url": "https://business-api.tiktok.com/portal/docs",
         "reference_file": "src/skills/paid-media-api/references/tiktok.md",
     },
+    "youtube": {
+        "platform_id": "youtube",
+        "display_name": "YouTube Analytics API",
+        "docs_url": "https://developers.google.com/youtube/analytics",
+        "reference_file": "src/skills/paid-media-api/references/youtube.md", 
+    },
 }
  
 # Resolve string aliases to their target dict

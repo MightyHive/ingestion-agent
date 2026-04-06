@@ -49,7 +49,6 @@ export default function ColumnSelector({
   const [search, setSearch]         = useState("")
   const [activeTab, setActiveTab]   = useState("all")
 
-  // Filtrar por búsqueda y categoría activa
   const filtered = columns.filter((c) => {
     const matchesSearch = c.name.toLowerCase().includes(search.toLowerCase()) ||
                           c.id.toLowerCase().includes(search.toLowerCase())
@@ -57,20 +56,22 @@ export default function ColumnSelector({
     return matchesSearch && matchesTab
   })
 
-  // Contadores por categoría
   const countByCategory = (cat: string) =>
     cat === "all" ? columns.length : columns.filter(c => c.category === cat).length
 
   function toggle(id: string) {
     setSelected((prev) => {
       const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
       return next
     })
   }
 
   function toggleCategory() {
-    // Selecciona/deselecciona solo los de la tab activa
     const inTab = filtered.map(c => c.id)
     const allSelected = inTab.every(id => selected.has(id))
     setSelected((prev) => {
@@ -88,8 +89,11 @@ export default function ColumnSelector({
 
   return (
     <div className="flex flex-col gap-4">
+      {message.trim() ? (
+        <p className="text-sm text-on-surface leading-relaxed">{message}</p>
+      ) : null}
 
-      {/* Tabs de categoría */}
+      {/* Category tabs */}
       <div className="flex gap-1 p-1 bg-muted rounded-xl">
         {CATEGORIES.map((cat) => {
           const count = countByCategory(cat.id)
@@ -118,7 +122,7 @@ export default function ColumnSelector({
         })}
       </div>
 
-      {/* Search + select category */}
+      {/* Search + select-all for active tab */}
       <div className="flex items-center gap-2">
         <div className="relative flex-1">
           <span className="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-on-surface-variant text-base">
@@ -140,7 +144,7 @@ export default function ColumnSelector({
         </button>
       </div>
 
-      {/* Contador global */}
+      {/* Summary counts */}
       <div className="flex items-center gap-2">
         <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-on-surface-variant font-medium">
           {filtered.length} fields
@@ -152,7 +156,7 @@ export default function ColumnSelector({
         )}
       </div>
 
-      {/* Lista de campos */}
+      {/* Field list — React key is the stable API field id (deduped in Zustand before render). */}
       <div className="flex flex-col gap-1.5 max-h-72 overflow-y-auto pr-1">
         {filtered.length === 0 && (
           <p className="text-sm text-on-surface-variant text-center py-6">
@@ -188,7 +192,7 @@ export default function ColumnSelector({
                 {col.name}
               </span>
 
-              {/* Tipo */}
+              {/* Type badge */}
               <span className={cn(
                 "text-xs font-semibold px-2 py-0.5 rounded flex-shrink-0",
                 TYPE_COLORS[col.type] ?? "bg-slate-100 text-slate-600"
