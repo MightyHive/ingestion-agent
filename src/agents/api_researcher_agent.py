@@ -89,9 +89,18 @@ for _k, _v in list(KNOWN_PLATFORMS.items()):
  
  
 def _resolve_platform(api_name: str) -> dict[str, Any] | None:
-    """Case-insensitive partial match against KNOWN_PLATFORMS keys."""
+    """Case-insensitive partial match against KNOWN_PLATFORMS keys.
+
+    Keys are checked longest-first so specific tokens (e.g. ``youtube``, ``google ads``)
+    win over short substrings such as ``google`` inside ``developers.google.com``.
+    """
     lower = api_name.lower().strip()
-    for key, data in KNOWN_PLATFORMS.items():
+    sorted_items = sorted(
+        KNOWN_PLATFORMS.items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+    for key, data in sorted_items:
         if isinstance(data, str):
             continue
         if key in lower or lower in key:
