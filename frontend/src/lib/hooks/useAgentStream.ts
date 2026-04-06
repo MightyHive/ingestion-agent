@@ -8,9 +8,13 @@ export interface FinalEvent {
   response_text: string
   requires_human_input: boolean
   ui_trigger?: {
-    component: "ColumnSelector" | "AuthForm" | string
-    message: string
-    data?: { columns?: unknown[] }
+    component: "ColumnSelector" | "SchemaApproval" | "AuthForm" | string
+    message?: string
+    data?: {
+      columns?: unknown[]
+      available_fields?: string[]
+      ddl?: string
+    }
   }
 }
 

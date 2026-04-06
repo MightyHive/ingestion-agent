@@ -85,6 +85,13 @@ When the user explicitly approves in a follow-up turn:
   - Set payload.action_taken = "executed_ddl"
   - Set payload.ddl_approved = True in the LOL
  
+# Human-in-the-Loop (Yield to UI)
+Whenever you propose a new schema (``ddl_approved=False``), you **must** set your final LOL ``status`` to
+**"WARN"** and ``reason`` to **"Waiting for user to approve the schema in the UI"**.
+That pauses the orchestrator so the backend can show the SchemaApproval screen (``table_ddl`` in artifacts).
+When the user has explicitly approved and you execute the DDL (``ddl_approved=True``), you may return
+``status`` **"OK"**.
+ 
 # BigQuery typing rules
 - TIMESTAMP for UTC datetimes (ISO-8601, epoch). Use DATE only when time component is irrelevant.
 - STRING for any field with inconsistent formats, nested JSON, or platform-specific enums.

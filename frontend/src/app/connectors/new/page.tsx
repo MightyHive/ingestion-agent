@@ -5,6 +5,7 @@ import { useEffect, useState } from "react"
 import { useAgentStream } from "@/lib/hooks/useAgentStream"
 import { getConnectorSessionId } from "@/lib/sessions"
 import ColumnSelector, { type Column } from "@/components/connectors/ColumnSelector"
+import { columnsFromUiTriggerData } from "@/lib/ui-trigger-fields"
 import { cn } from "@/lib/utils"
 
 // ── Static connector metadata ─────────────────────────────────────────────────
@@ -379,17 +380,17 @@ function DynamicComponent({
   onConfirm,
   isLoading,
 }: {
-  trigger: { component: string; message: string; data?: Record<string, unknown> }
+  trigger: { component: string; message?: string; data?: Record<string, unknown> }
   onConfirm: (columns: string[]) => void
   isLoading: boolean
 }) {
   switch (trigger.component) {
     case "ColumnSelector": {
-      // Use columns from trigger.data if provided, else show placeholder set
-      const columns: Column[] = (trigger.data?.columns as Column[]) ?? PLACEHOLDER_COLUMNS
+      const fromApi = columnsFromUiTriggerData(trigger.data)
+      const columns: Column[] = fromApi.length ? fromApi : PLACEHOLDER_COLUMNS
       return (
         <ColumnSelector
-          message={trigger.message}
+          message={trigger.message ?? "Select columns for ingestion"}
           columns={columns}
           onConfirm={onConfirm}
           isLoading={isLoading}
@@ -397,18 +398,34 @@ function DynamicComponent({
       )
     }
 
+    case "SchemaApproval": {
+      const ddl = typeof trigger.data?.ddl === "string" ? trigger.data.ddl : ""
+      return (
+        <div className="p-4 rounded-xl border border-border bg-card text-sm space-y-2">
+          <p className="font-semibold text-on-surface">{trigger.message ?? "Schema approval"}</p>
+          {ddl ? (
+            <pre className="text-xs font-mono whitespace-pre-wrap break-words max-h-64 overflow-auto bg-muted p-3 rounded-lg">
+              {ddl}
+            </pre>
+          ) : (
+            <p className="text-on-surface-variant">No DDL in trigger payload.</p>
+          )}
+        </div>
+      )
+    }
+
     case "AuthForm":
       return (
         <div className="p-4 rounded-xl border border-amber-200 bg-amber-50 text-sm text-amber-800">
           <p className="font-semibold mb-1">Authentication required</p>
-          <p>{trigger.message}</p>
+          <p>{trigger.message ?? ""}</p>
         </div>
       )
 
     default:
       return (
         <div className="p-3 rounded-xl border border-border bg-muted text-sm text-on-surface-variant">
-          <span className="font-mono">{trigger.component}</span>: {trigger.message}
+          <span className="font-mono">{trigger.component}</span>: {trigger.message ?? ""}
         </div>
       )
   }

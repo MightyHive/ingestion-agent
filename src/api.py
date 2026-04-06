@@ -96,6 +96,55 @@ def _sse_headers() -> dict[str, str]:
     }
 
 
+def _field_strs_from_api_spec(artifacts: dict[str, Any]) -> list[str]:
+    spec = artifacts.get("api_spec")
+    if not isinstance(spec, dict):
+        return []
+    raw = spec.get("available_fields")
+    if not isinstance(raw, list) or not raw:
+        return []
+    return [str(x).strip() for x in raw if str(x).strip()]
+
+
+def _field_strs_from_researcher_events(event_bus: list[dict]) -> list[str]:
+    """Build API field names from the latest successful api_researcher LOL payload."""
+    for ev in reversed(event_bus):
+        if ev.get("id") != "api_researcher" or ev.get("status") == "ERR":
+            continue
+        payload = ev.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        fields = payload.get("available_fields")
+        if not isinstance(fields, list):
+            continue
+        names: list[str] = []
+        for item in fields:
+            if isinstance(item, dict):
+                af = item.get("api_field")
+                if af is None:
+                    continue
+                s = str(af).strip()
+                if s and s != "NOT_AVAILABLE" and not s.startswith("DERIVED("):
+                    names.append(s)
+            elif isinstance(item, str) and item.strip():
+                names.append(item.strip())
+        if names:
+            return names
+    return []
+
+
+def _column_selector_field_strs(artifacts: dict[str, Any], event_bus: list[dict]) -> list[str]:
+    from_spec = _field_strs_from_api_spec(artifacts)
+    if from_spec:
+        return from_spec
+    return _field_strs_from_researcher_events(event_bus)
+
+
+def _has_persisted_ddl(artifacts: dict[str, Any]) -> bool:
+    ddl = artifacts.get("table_ddl")
+    return isinstance(ddl, str) and bool(ddl.strip())
+
+
 async def _sse_graph_stream(*, session_id: str, input_state: dict) -> AsyncIterator[str]:
     graph = get_compiled_graph()
     config = {"configurable": {"thread_id": session_id}}
@@ -113,10 +162,43 @@ async def _sse_graph_stream(*, session_id: str, input_state: dict) -> AsyncItera
     snap = await graph.aget_state(config)
     final_state = getattr(snap, "values", None) or {}
     eb = final_state.get("event_bus") or []
-    requires_human_input = bool(eb and eb[-1].get("status") == "WARN")
-    ui_trigger = None
+    artifacts = final_state.get("artifacts") or {}
+    if not isinstance(artifacts, dict):
+        artifacts = {}
+
+    last = eb[-1] if eb else {}
+    last_warn = bool(last.get("status") == "WARN")
+
+    field_strs = _column_selector_field_strs(artifacts, eb)
+    researcher_done = any(
+        e.get("id") == "api_researcher" and e.get("status") in ("OK", "WARN") for e in eb
+    )
+    # Wizard step 1: catalog ready, no Bronze DDL yet — show ColumnSelector even if the model returned OK.
+    want_column_ui = researcher_done and not _has_persisted_ddl(artifacts) and bool(field_strs)
+
+    requires_human_input = last_warn or want_column_ui
+
+    ui_trigger: dict[str, Any] | None = None
     if requires_human_input:
-        ui_trigger = {"component": "ColumnSelector", "message": "Select columns"}
+        ddl_raw = artifacts.get("table_ddl")
+        if isinstance(ddl_raw, str) and ddl_raw.strip() and last_warn:
+            ui_trigger = {
+                "component": "SchemaApproval",
+                "message": "Review and approve the proposed schema",
+                "data": {"ddl": ddl_raw.strip()},
+            }
+        elif field_strs:
+            ui_trigger = {
+                "component": "ColumnSelector",
+                "message": "Select columns for ingestion",
+                "data": {"available_fields": field_strs},
+            }
+        else:
+            ui_trigger = {
+                "component": "ColumnSelector",
+                "message": "Select columns for ingestion",
+                "data": {"available_fields": []},
+            }
     final_payload = {
         "type": "final",
         "response_text": final_state.get("final_response") or "",

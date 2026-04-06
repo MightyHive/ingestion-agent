@@ -211,12 +211,25 @@ List anything that limits accuracy, e.g.:
 Must follow the APIResearcherLOL model exactly.
  
  
+# Human-in-the-Loop (Yield to UI)
+Because the user must select fields from the catalog you just discovered, you **must** set your final LOL
+``status`` to **"WARN"** and ``reason`` to **"Waiting for user to select columns in the UI"**.
+That signal pauses the orchestrator so FastAPI can emit ``ui_trigger`` (ColumnSelector) with
+``available_fields`` from the persisted ``api_spec``. Do not return ``status`` **"OK"** after a successful
+catalog discovery in this flow.
+ 
+ 
 # Artifact handoff (mandatory)
 Before you finish your turn, you **must** call ``save_api_contract`` once with the technical
 contract for the API you researched: ``base_url``, ``auth_type``, ``pagination`` strategy,
-HTTP ``method``, and ``headers_required``. This persists ``api_spec`` into session artifacts so
-the Software Engineer can generate connector code without relying on volatile chat context.
-Fill every parameter from documentation (use empty string or ``[]`` only when truly unknown).
+HTTP ``method``, ``headers_required``, and ``available_fields``.
+This persists ``api_spec`` into session artifacts so the Software Engineer and UI can consume
+a stable contract without relying on volatile chat context.
+You **must** populate ``available_fields`` with a comprehensive list of every metric, dimension,
+and attribute you discovered (use each field's API name as in ``available_fields`` in your LOL output,
+e.g. ``["impressions", "spend", "clicks", "campaign_name", …]``). Order: canonical nine first when
+applicable, then the rest as in your field catalog.
+Fill scalar parameters from documentation (use empty string or ``[]`` only when truly unknown).
 """
  
  
@@ -307,8 +320,9 @@ def build_api_researcher_agent() -> Agent:
         pagination: str,
         method: str,
         headers_required: List[str],
+        available_fields: List[str] | None = None,
     ) -> Dict[str, Any]:
-        """Persist a normalized API contract to session artifacts for the Software Engineer.
+        """Persist a normalized API contract to session artifacts for the Software Engineer and UI.
 
         Args:
             base_url: Fully qualified base URL or path prefix for reporting requests.
@@ -316,6 +330,7 @@ def build_api_researcher_agent() -> Agent:
             pagination: How the API pages results (cursor, offset, etc.).
             method: Primary HTTP method for the reporting/read endpoint (GET, POST, ...).
             headers_required: Header names the client must send (besides auth), if any.
+            available_fields: All API field names discovered (metrics, dimensions, attributes) for column pickers.
 
         Returns:
             Serialized ``ToolOutput`` indicating whether ``api_spec`` was written to the sidecar.
@@ -330,10 +345,12 @@ def build_api_researcher_agent() -> Agent:
                     pagination=pagination,
                     method=method,
                     headers_required=headers_required,
+                    available_fields=available_fields,
                 )
             ),
             base_url_len=len(base_url or ""),
             method=method,
+            fields_count=len(available_fields or []),
         )
 
     return agent
