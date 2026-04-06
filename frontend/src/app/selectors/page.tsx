@@ -2,11 +2,7 @@
 
 import { useRouter } from "next/navigation"
 import { useConnectorStore } from "@/lib/stores/connectorStore"
-import { generateMockSchema } from "@/lib/mock-agent"
 import ColumnSelector from "@/components/connectors/ColumnSelector"
-
-const IS_MOCK  = process.env.NEXT_PUBLIC_MOCK === "true"
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"
 
 const NODE_LABELS: Record<string, string> = {
   coordinator:    "Coordinating Agent",
@@ -18,52 +14,14 @@ export default function SelectorsPage() {
   const router = useRouter()
   const store  = useConnectorStore()
 
-  const { connectorId, connectorName, fields, isInvestigating,
-          investigationError, completedNodes, sessionId } = store
+  const { connectorName, fields, isInvestigating, investigationError, completedNodes, sessionId } =
+    store
 
-  async function handleConfirm(selected: string[]) {
+  function handleConfirm(selected: string[]) {
     store.setSelectedFields(selected)
     store.setProposing(true)
+    void store.submitUserInput(sessionId!, { columns_selected: selected })
     router.push("/schema")
-
-    try {
-      if (IS_MOCK) {
-        await new Promise(r => setTimeout(r, 1800))
-        const proposal = generateMockSchema(connectorId ?? "meta", selected)
-        store.setSchemaProposal(proposal)
-      } else {
-        const response = await fetch(`${API_BASE}/api/submit_input`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id: sessionId, user_input: { columns: selected } }),
-        })
-        if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`)
-
-        const reader  = response.body.getReader()
-        const decoder = new TextDecoder()
-        let buffer    = ""
-
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          buffer += decoder.decode(value, { stream: true })
-          const chunks = buffer.split("\n\n")
-          buffer = chunks.pop() ?? ""
-          for (const chunk of chunks) {
-            const line = chunk.replace(/^data:\s*/, "").trim()
-            if (!line) continue
-            try {
-              const event = JSON.parse(line)
-              if (event.type === "final" && event.schema) {
-                store.setSchemaProposal(event.schema)
-              }
-            } catch { }
-          }
-        }
-      }
-    } catch (err) {
-      store.setProposalError(err instanceof Error ? err.message : "Error al generar el schema")
-    }
   }
 
   if (!connectorName && !isInvestigating) {

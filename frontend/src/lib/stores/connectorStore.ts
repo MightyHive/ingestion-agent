@@ -1,7 +1,7 @@
 import { create } from "zustand"
 import type { Column } from "@/components/connectors/ColumnSelector"
 import { columnsFromUiTriggerData } from "@/lib/ui-trigger-fields"
-import { mockAgentStream } from "@/lib/mock-agent"
+import { mockAgentStream, mockSubmitInputStream } from "@/lib/mock-agent"
 
 const IS_MOCK = process.env.NEXT_PUBLIC_MOCK === "true"
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"
@@ -67,6 +67,7 @@ interface ConnectorStore {
   setProposing: (value: boolean) => void
   setProposalError: (error: string | null) => void
   startInvestigation: (sessionId: string, message: string) => Promise<void>
+  submitUserInput: (sessionId: string, userInput: unknown) => Promise<void>
   abortStream: () => void
   reset: () => void
 }
@@ -83,6 +84,29 @@ export interface SchemaProposal {
   tableName: string
   columns: SchemaColumn[]
   ddl: string
+}
+
+/** Map FastAPI ``schema_preview`` / BQSchemaField rows into store columns. */
+function schemaColumnsFromUiTrigger(raw: unknown): SchemaColumn[] {
+  if (!Array.isArray(raw)) return []
+  return raw.map((item): SchemaColumn => {
+    if (!isRecord(item)) {
+      return { name: "", original: "", type: "STRING", mode: "NULLABLE" }
+    }
+    const fieldName =
+      typeof item.field_name === "string"
+        ? item.field_name
+        : typeof item.name === "string"
+          ? item.name
+          : ""
+    return {
+      name: fieldName,
+      original: typeof item.original === "string" ? item.original : fieldName,
+      type: typeof item.type === "string" ? item.type : "STRING",
+      mode: item.mode === "REQUIRED" ? "REQUIRED" : "NULLABLE",
+      description: typeof item.description === "string" ? item.description : undefined,
+    }
+  })
 }
 
 const initialState = {
@@ -143,7 +167,7 @@ export const useConnectorStore = create<ConnectorStore>((set, get) => ({
   abortStream: () => {
     const ac = get().abortController
     if (ac) ac.abort()
-    set({ abortController: null, isInvestigating: false })
+    set({ abortController: null, isInvestigating: false, isProposing: false })
   },
 
   startInvestigation: async (sessionId, message) => {
@@ -255,6 +279,123 @@ export const useConnectorStore = create<ConnectorStore>((set, get) => ({
       set((s) => {
         if (s.abortController !== ac) return {}
         return { isInvestigating: false, abortController: null }
+      })
+    }
+  },
+
+  submitUserInput: async (sessionId, userInput) => {
+    const prev = get().abortController
+    if (prev) prev.abort()
+
+    const ac = new AbortController()
+    set({
+      isProposing: true,
+      proposalError: null,
+      abortController: ac,
+      completedNodes: [],
+    })
+
+    const applySseEvents = (events: unknown[]) => {
+      for (const raw of events) {
+        if (!isRecord(raw)) continue
+        const type = raw.type
+        if (type === "progress" && typeof raw.node === "string") {
+          set((state) => ({ completedNodes: [...state.completedNodes, raw.node as string] }))
+        } else if (type === "final") {
+          const utRaw = raw.ui_trigger
+          set(() => {
+            const uiTrigger: UiTriggerState = isRecord(utRaw)
+              ? {
+                  component: String(utRaw.component ?? ""),
+                  message:
+                    typeof utRaw.message === "string" ? utRaw.message : undefined,
+                  data: isRecord(utRaw.data) ? utRaw.data : undefined,
+                }
+              : null
+
+            const base = {
+              abortController: null as AbortController | null,
+              uiTrigger,
+              isProposing: false,
+            }
+
+            if (
+              isRecord(utRaw) &&
+              utRaw.component === "SchemaApproval" &&
+              isRecord(utRaw.data) &&
+              typeof utRaw.data.ddl === "string"
+            ) {
+              return {
+                ...base,
+                schemaProposal: {
+                  tableName: "Pending Schema",
+                  columns: schemaColumnsFromUiTrigger(utRaw.data.columns ?? []),
+                  ddl: utRaw.data.ddl,
+                },
+              }
+            }
+
+            return base
+          })
+        }
+      }
+    }
+
+    try {
+      if (IS_MOCK) {
+        const connectorId = get().connectorId ?? "meta"
+        const selected =
+          isRecord(userInput) && Array.isArray(userInput.columns_selected)
+            ? (userInput.columns_selected as string[])
+            : []
+        let buf = ""
+        for await (const sseChunk of mockSubmitInputStream(connectorId, selected)) {
+          if (ac.signal.aborted) break
+          const { buffer, events } = feedSseBuffer(buf, sseChunk)
+          buf = buffer
+          applySseEvents(events)
+        }
+      } else {
+        const response = await fetch(`${API_BASE}/api/submit_input`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId, user_input: userInput }),
+          signal: ac.signal,
+        })
+
+        if (!response.ok || !response.body) {
+          throw new Error(`HTTP ${response.status}`)
+        }
+
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ""
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          const { buffer: nextBuf, events } = feedSseBuffer(
+            buffer,
+            decoder.decode(value, { stream: true })
+          )
+          buffer = nextBuf
+          applySseEvents(events)
+        }
+      }
+    } catch (e) {
+      if (e instanceof Error && e.name === "AbortError") {
+        set({ isProposing: false, abortController: null })
+        return
+      }
+      set({
+        proposalError:
+          e instanceof Error ? e.message : "Error al generar el schema",
+        isProposing: false,
+        abortController: null,
+      })
+    } finally {
+      set((s) => {
+        if (s.abortController !== ac) return {}
+        return { isProposing: false, abortController: null }
       })
     }
   },

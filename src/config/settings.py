@@ -1,8 +1,17 @@
 import os
+
 from dotenv import load_dotenv
+from pydantic import Field
 
 # Load environment variables from .env
 load_dotenv()
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return int(raw)
 
 
 class Settings:
@@ -18,6 +27,8 @@ class Settings:
     TEMPERATURE = float(os.getenv("TEMPERATURE", "0.0"))
 
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+
+    API_CATALOG_TTL_DAYS: int = _env_int("API_CATALOG_TTL_DAYS", Field(default=7).default)
 
 
 settings = Settings()

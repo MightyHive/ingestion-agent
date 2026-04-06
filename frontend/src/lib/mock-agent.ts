@@ -159,3 +159,31 @@ export async function* mockAgentStream(connectorId: string): AsyncGenerator<stri
     },
   })}\n\n`
 }
+
+/** Mock SSE for submit_input → SchemaApproval (aligned with FastAPI ui_trigger shape). */
+export async function* mockSubmitInputStream(
+  connectorId: string,
+  selectedIds: string[]
+): AsyncGenerator<string> {
+  const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
+  const proposal = generateMockSchema(connectorId, selectedIds)
+
+  yield `data: ${JSON.stringify({ type: "connection", status: "connected" })}\n\n`
+  await delay(300)
+
+  yield `data: ${JSON.stringify({ type: "progress", node: "coordinator" })}\n\n`
+  await delay(400)
+
+  yield `data: ${JSON.stringify({ type: "progress", node: "data_architect" })}\n\n`
+  await delay(600)
+
+  yield `data: ${JSON.stringify({
+    type: "final",
+    response_text: "Propuesta de schema lista para revisión.",
+    ui_trigger: {
+      component: "SchemaApproval",
+      message: "Revisá el DDL propuesto.",
+      data: { ddl: proposal.ddl, columns: proposal.columns },
+    },
+  })}\n\n`
+}
