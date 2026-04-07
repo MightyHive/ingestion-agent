@@ -177,7 +177,16 @@ def _schema_preview_rows_for_ui(raw: list[Any]) -> list[dict[str, Any]]:
             continue
         row = dict(item)
         desc = row.get("description")
-        row["description"] = desc.strip() if isinstance(desc, str) else ""
+        desc_str = desc.strip() if isinstance(desc, str) else ""
+        if not desc_str:
+            label = row.get("label")
+            if isinstance(label, str) and label.strip():
+                desc_str = label.strip()
+        if not desc_str:
+            fn = row.get("field_name")
+            if isinstance(fn, str) and fn.strip():
+                desc_str = f"Column {fn.strip()}"
+        row["description"] = desc_str
         out.append(row)
     return out
 

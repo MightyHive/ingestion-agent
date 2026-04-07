@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic_ai import RunContext
 
@@ -62,10 +62,16 @@ def _list_raw_datasets(project_id: str) -> ToolOutput:
         msg=json.dumps(payload),
     )
 
-# Map from APIResearcherFieldMapping.type → BigQuery DDL type
+# BigQuery column identifier: letter or underscore first, then letters, digits, underscores.
+_BQ_COLUMN_IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+# Map from APIResearcherFieldMapping.type → BigQuery DDL type (GoogleSQL)
 _BQ_TYPE_MAP: dict[str, str] = {
     "FLOAT64":   "FLOAT64",
+    "FLOAT":     "FLOAT64",
+    "DOUBLE":    "FLOAT64",
     "INTEGER":   "INT64",
+    "INT":       "INT64",
     "INT64":     "INT64",
     "STRING":    "STRING",
     "TIMESTAMP": "TIMESTAMP",
@@ -73,6 +79,75 @@ _BQ_TYPE_MAP: dict[str, str] = {
     "BOOLEAN":   "BOOL",
     "BOOL":      "BOOL",
 }
+
+
+def sanitize_bq_column_identifier(raw: str) -> str:
+    """
+    Normalize a candidate column name to a valid BigQuery identifier
+    (``^[a-zA-Z_][a-zA-Z0-9_]*$`` in GoogleSQL).
+
+    Examples:
+        ``Clicks-Total`` → ``clicks_total``
+        ``123clicks`` → ``col_123clicks``
+    """
+    if raw is None or not str(raw).strip():
+        return "unnamed_column"
+    s = str(raw).strip().lower()
+    s = s.replace(".", "_")
+    s = re.sub(r"[^a-z0-9_]+", "_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+    if not s:
+        s = "unnamed_column"
+    if s[0].isdigit():
+        s = f"col_{s}"
+    elif not (s[0].isalpha() or s[0] == "_"):
+        s = f"col_{s}"
+    s = re.sub(r"[^a-z0-9_]", "", s)
+    if not s:
+        s = "unnamed_column"
+    if s[0].isdigit():
+        s = f"col_{s}"
+    if not _BQ_COLUMN_IDENT_RE.match(s):
+        s = "unnamed_column"
+    return s
+
+
+def _escape_bq_options_description(text: str) -> str:
+    """Escape text for use inside ``OPTIONS(description='...')`` (single-quoted literal)."""
+    return text.replace("\\", "\\\\").replace("'", "''")
+
+
+def validate_schema_alignment(
+    schema_preview: list[dict[str, Any]],
+    proposed_ddl: str,
+) -> tuple[bool, list[str]]:
+    """
+    Check that every ``schema_preview`` row uses a valid identifier, includes a description,
+    and that each ``field_name`` appears in the proposed DDL text.
+    """
+    issues: list[str] = []
+    ddl = proposed_ddl or ""
+    ddl_lower = ddl.lower()
+
+    for i, col in enumerate(schema_preview):
+        fn = col.get("field_name")
+        if not isinstance(fn, str) or not fn.strip():
+            issues.append(f"Row {i}: missing field_name")
+            continue
+        if not _BQ_COLUMN_IDENT_RE.match(fn):
+            issues.append(f"Row {i}: invalid BigQuery identifier {fn!r}")
+        desc = col.get("description")
+        if not (isinstance(desc, str) and desc.strip()):
+            issues.append(f"Row {i}: empty description for {fn!r}")
+        token = fn.lower()
+        if token not in ddl_lower and f"`{fn}`".lower() not in ddl_lower:
+            issues.append(f"Row {i}: column {fn!r} not found in proposed_ddl")
+
+    if "options(description=" not in ddl_lower:
+        issues.append("DDL should include OPTIONS(description=...) for column metadata")
+
+    return (len(issues) == 0, issues)
+
 
 # System columns always added to every Bronze table
 _SYSTEM_COLUMNS: list[dict] = [
@@ -91,21 +166,21 @@ _SYSTEM_COLUMNS: list[dict] = [
 ]
 
 def _api_field_to_column_name(api_field: str) -> str:
-    """Convert an api_field to a safe BigQuery column name.
- 
-    Examples:
-      'metrics.cost_micros'            → 'cost_micros'
-      'link_click_default_uas'         → 'link_click_default_uas'
-      'DERIVED(clicks/impressions)'    → 'ctr'
-      'offsite_conversion.fb_pixel_purchase' → 'offsite_conversion_fb_pixel_purchase'
-    """
+    """Derive a BigQuery-safe column name from the API Researcher ``api_field`` path."""
     if api_field == "NOT_AVAILABLE":
-        return "not_available"
-    # Strip dot notation prefix (take last segment for simple nested paths)
-    name = api_field.split(".")[-1]
-    # Replace any non-alphanumeric with underscore
+        return sanitize_bq_column_identifier("not_available")
+    raw = api_field.strip()
+    if raw.upper().startswith("DERIVED(") and raw.endswith(")"):
+        inner = raw[8:-1].strip()
+        if "/" in inner:
+            name_guess = "ratio_" + inner.split("/")[-1].strip()
+        else:
+            name_guess = inner or "derived"
+        return sanitize_bq_column_identifier(name_guess)
+    # Last path segment, then full BigQuery identifier rules
+    name = raw.split(".")[-1]
     name = re.sub(r"[^a-zA-Z0-9]", "_", name).lower().strip("_")
-    return name
+    return sanitize_bq_column_identifier(name or "field")
 
 
 def _propose_bq_schema(selected_fields_json:str, platform:str, project_id:str = "", dataset:str ="",) -> ToolOutput:
@@ -142,12 +217,15 @@ def _propose_bq_schema(selected_fields_json:str, platform:str, project_id:str = 
         if api_field in ("NOT_AVAILABLE", ""):
             continue
         col_name = _api_field_to_column_name(api_field)
-        bq_type = _BQ_TYPE_MAP.get(field.get("type", "STRING"), "STRING")
+        raw_type = field.get("type", "STRING")
+        type_key = str(raw_type).strip().upper() if raw_type is not None else "STRING"
+        bq_type = _BQ_TYPE_MAP.get(type_key, "STRING")
         mode = "NULLABLE"
         note = (field.get("note") or "").strip()
         label = (field.get("label") or "").strip()
         semantics = (field.get("semantics") or "").strip()
         parts = [p for p in (note, semantics) if p]
+        # Default description: API Researcher label when no note/semantics (per product contract).
         description = " ".join(parts) if parts else (label or f"API field {api_field}")
         schema_preview.append({
             "field_name": col_name,
@@ -159,12 +237,13 @@ def _propose_bq_schema(selected_fields_json:str, platform:str, project_id:str = 
     # Always append system columns at the end
     schema_preview.extend(_SYSTEM_COLUMNS)
  
-    # ── Build DDL ─────────────────────────────────────────────
-    col_lines = []
+    # ── Build DDL (GoogleSQL): mandatory OPTIONS(description='...') per column ──
+    col_lines: list[str] = []
     for col in schema_preview:
+        esc = _escape_bq_options_description(str(col["description"]))
         col_lines.append(
             f"  {col['field_name']} {col['type']} {col['mode']}"
-            f" OPTIONS(description='{col['description']}')"
+            f" OPTIONS(description='{esc}')"
         )
  
     ddl = (
@@ -203,7 +282,18 @@ def _propose_bq_schema(selected_fields_json:str, platform:str, project_id:str = 
         f"GROUP BY\n  {', '.join(str(i + 1) for i in range(len(select_cols)))}"
     )
  
-    result = {
+    aligned, alignment_issues = validate_schema_alignment(
+        cast(list[dict[str, Any]], schema_preview),
+        ddl,
+    )
+    note_parts = [
+        "DDL is a proposal — not yet executed. "
+        "Set ddl_approved=True in the LOL only after explicit user confirmation."
+    ]
+    if not aligned:
+        note_parts.append("Schema alignment warnings: " + "; ".join(alignment_issues))
+
+    result: dict[str, Any] = {
         "table_name": table_name,
         "dataset_target": ds,
         "full_table": full_table,
@@ -213,16 +303,15 @@ def _propose_bq_schema(selected_fields_json:str, platform:str, project_id:str = 
         "total_columns": len(schema_preview),
         "user_columns": len(schema_preview) - len(_SYSTEM_COLUMNS),
         "system_columns": len(_SYSTEM_COLUMNS),
-        "note": (
-            "DDL is a proposal — not yet executed. "
-            "Set ddl_approved=True in the LOL only after explicit user confirmation."
-        ),
+        "schema_alignment_ok": aligned,
+        "schema_alignment_issues": alignment_issues,
+        "note": " ".join(note_parts),
     }
- 
+
     return ToolOutput(
         status="OK",
         code="SCHEMA_PROPOSED",
-        msg=json.dumps(result),
+        msg=json.dumps(result, default=str),
     )
 
 
@@ -322,3 +411,35 @@ def register_architect_tools(agent: Agent[Any, Any]) -> None:
         """
         out = _execute_ddl(ctx.deps.project_id, ddl_statement, ddl_approved=ddl_approved)
         return dump_tool_output(out)
+
+    @agent.tool
+    async def validate_schema_alignment_tool(
+        ctx: RunContext[DataArchitectDeps],
+        schema_preview_json: str,
+        proposed_ddl: str,
+    ) -> dict[str, Any]:
+        """
+        Verify that a schema_preview JSON array aligns with a proposed CREATE TABLE DDL
+        (identifiers, descriptions, column presence). Use after manual DDL edits.
+        """
+        try:
+            parsed = json.loads(schema_preview_json)
+            if not isinstance(parsed, list):
+                raise ValueError("schema_preview_json must be a JSON array")
+            rows = cast(list[dict[str, Any]], parsed)
+        except (json.JSONDecodeError, ValueError) as exc:
+            return dump_tool_output(
+                ToolOutput(
+                    status="ERR",
+                    code="INVALID_SCHEMA_JSON",
+                    msg=str(exc),
+                )
+            )
+        ok, issues = validate_schema_alignment(rows, proposed_ddl)
+        return dump_tool_output(
+            ToolOutput(
+                status="OK",
+                code="SCHEMA_ALIGNED" if ok else "SCHEMA_MISALIGNED",
+                msg=json.dumps({"aligned": ok, "issues": issues}),
+            )
+        )
