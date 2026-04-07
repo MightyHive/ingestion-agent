@@ -8,9 +8,13 @@ export interface FinalEvent {
   response_text: string
   requires_human_input: boolean
   ui_trigger?: {
-    component: "ColumnSelector" | "AuthForm" | string
-    message: string
-    data?: { columns?: unknown[] }
+    component: "ColumnSelector" | "SchemaApproval" | "AuthForm" | string
+    message?: string
+    data?: {
+      columns?: unknown[]
+      available_fields?: string[]
+      ddl?: string
+    }
   }
 }
 
@@ -109,7 +113,7 @@ export function useAgentStream() {
         await readStream(response, onProgress, onFinal, onConnected)
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Error desconocido")
+      setError(err instanceof Error ? err.message : "Unknown error")
       setIsLoading(false)
     }
   }, [])

@@ -68,7 +68,8 @@ The tool returns: table_name, schema_preview, proposed_ddl, sql_preview.
 From the tool output, populate:
   - payload.table_name
   - payload.dataset_target
-  - payload.schema_preview  ← list of BQSchemaField objects
+  - payload.schema_preview  ← list of BQSchemaField objects (each row MUST include ``description``:
+    use the tool's text when present; otherwise combine API ``label``, ``note``, and ``semantics`` so the UI never shows empty metadata)
   - payload.proposed_ddl    ← the CREATE TABLE statement
   - payload.sql_preview     ← illustrative SELECT
   - payload.selected_fields ← list of api_field strings that were passed in
@@ -84,6 +85,13 @@ When the user explicitly approves in a follow-up turn:
   - Call execute_ddl(ddl_statement, ddl_approved=True)
   - Set payload.action_taken = "executed_ddl"
   - Set payload.ddl_approved = True in the LOL
+ 
+# Human-in-the-Loop (Yield to UI)
+Whenever you propose a new schema (``ddl_approved=False``), you **must** set your final LOL ``status`` to
+**"WARN"** and ``reason`` to **"Waiting for user to approve the schema in the UI"**.
+That pauses the orchestrator so the backend can show the SchemaApproval screen (``table_ddl`` in artifacts).
+When the user has explicitly approved and you execute the DDL (``ddl_approved=True``), you may return
+``status`` **"OK"**.
  
 # BigQuery typing rules
 - TIMESTAMP for UTC datetimes (ISO-8601, epoch). Use DATE only when time component is irrelevant.

@@ -4,12 +4,7 @@ import { useRouter } from "next/navigation"
 import { useState } from "react"
 import { useConnectorStore } from "@/lib/stores/connectorStore"
 import { getConnectorSessionId } from "@/lib/sessions"
-import { mockAgentStream } from "@/lib/mock-agent"
-import type { Column } from "@/components/connectors/ColumnSelector"
 import { cn } from "@/lib/utils"
-
-const IS_MOCK = process.env.NEXT_PUBLIC_MOCK === "true"
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"
 
 const CONNECTORS = [
   { id: "meta", name: "Meta Ads", description: "Facebook & Instagram campaigns, ad sets, creatives and performance metrics.", category: "Paid Media", apiVersion: "v18.0", color: "#1877F2", initial: "M" },
@@ -20,57 +15,19 @@ const CONNECTORS = [
 export default function ConnectorsPage() {
   const router = useRouter()
   const store = useConnectorStore()
-  const [selected, setSelected] = useState(null)
+  const [selected, setSelected] = useState<string | null>(null)
 
-  async function handleContinue() {
+  function handleContinue() {
     if (!selected) return
-    const connector = CONNECTORS.find(c => c.id === selected)
+    const connector = CONNECTORS.find((c) => c.id === selected)
+    if (!connector) return
     const sessionId = getConnectorSessionId(selected)
     store.setConnector(selected, connector.name, sessionId)
-    store.setInvestigating(true)
+    void store.startInvestigation(
+      sessionId,
+      `Investigate the ${connector.name} API and return the full field catalog`
+    )
     router.push("/selectors")
-
-    try {
-      if (IS_MOCK) {
-        for await (const chunk of mockAgentStream(selected)) {
-          const line = chunk.replace(/^data:\s*/, "").trim()
-          if (!line) continue
-          const event = JSON.parse(line)
-          if (event.type === "progress") store.addCompletedNode(event.node)
-          if (event.type === "final" && event.ui_trigger?.data?.columns) {
-            store.setFields(event.ui_trigger.data.columns)
-          }
-        }
-      } else {
-        const response = await fetch(`${API_BASE}/api/chat`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id: sessionId, message: `Investigate the ${connector.name} API and return the full field catalog` }),
-        })
-        if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`)
-        const reader = response.body.getReader()
-        const decoder = new TextDecoder()
-        let buffer = ""
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          buffer += decoder.decode(value, { stream: true })
-          const chunks = buffer.split("\n\n")
-          buffer = chunks.pop() ?? ""
-          for (const chunk of chunks) {
-            const line = chunk.replace(/^data:\s*/, "").trim()
-            if (!line) continue
-            try {
-              const event = JSON.parse(line)
-              if (event.type === "progress") store.addCompletedNode(event.node)
-              if (event.type === "final" && event.ui_trigger?.data?.columns) store.setFields(event.ui_trigger.data.columns)
-            } catch { }
-          }
-        }
-      }
-    } catch (err) {
-      store.setInvestigationError(err instanceof Error ? err.message : "Error al investigar la API")
-    }
   }
 
   return (
@@ -104,7 +61,7 @@ export default function ConnectorsPage() {
       {selected && (
         <div className="flex justify-end">
           <button onClick={handleContinue} className="flex items-center gap-2 px-6 py-2.5 bg-primary text-white text-sm font-semibold rounded-xl hover:bg-primary/90 transition-colors">
-            Keep going with {CONNECTORS.find(c => c.id === selected)?.name}
+            Keep going with {CONNECTORS.find((c) => c.id === selected)?.name}
             <span className="material-symbols-outlined text-base">arrow_forward</span>
           </button>
         </div>

@@ -4,7 +4,9 @@ import { useSearchParams, useRouter } from "next/navigation"
 import { useEffect, useState } from "react"
 import { useAgentStream } from "@/lib/hooks/useAgentStream"
 import { getConnectorSessionId } from "@/lib/sessions"
+import { AgentProgressPanel } from "@/components/agents/AgentProgressPanel"
 import ColumnSelector, { type Column } from "@/components/connectors/ColumnSelector"
+import { columnsFromUiTriggerData } from "@/lib/ui-trigger-fields"
 import { cn } from "@/lib/utils"
 
 // ── Static connector metadata ─────────────────────────────────────────────────
@@ -192,34 +194,11 @@ export default function NewConnectorPage() {
             <div className="flex flex-col gap-4">
               {/* Progress nodes */}
               {(isLoading || completedNodes.length > 0) && (
-                <div className="space-y-2">
-                  <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider">
-                    Agent progress
-                  </p>
-                  {completedNodes.map((node) => (
-                    <div
-                      key={node}
-                      className="flex items-center gap-3 px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200"
-                    >
-                      <span className="material-symbols-outlined text-emerald-600 text-base">
-                        check_circle
-                      </span>
-                      <span className="text-sm font-medium text-emerald-800">
-                        {NODE_LABELS[node] ?? node}
-                      </span>
-                    </div>
-                  ))}
-                  {isLoading && (
-                    <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-blue-50 border border-blue-200">
-                      <span className="material-symbols-outlined text-blue-600 text-base animate-spin">
-                        sync
-                      </span>
-                      <span className="text-sm font-medium text-blue-800">
-                        Thinking...
-                      </span>
-                    </div>
-                  )}
-                </div>
+                <AgentProgressPanel
+                  completedNodes={completedNodes}
+                  active={isLoading}
+                  nodeLabels={NODE_LABELS}
+                />
               )}
 
               {/* Final response text */}
@@ -312,16 +291,6 @@ export default function NewConnectorPage() {
               </div>
             </div>
           )}
-
-          {/* Session info */}
-          <div className="bg-card rounded-2xl border border-border p-5">
-            <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-2">
-              Session
-            </p>
-            <p className="text-xs font-mono text-on-surface-variant break-all">
-              {sessionId}
-            </p>
-          </div>
         </div>
       </div>
     </div>
@@ -379,17 +348,17 @@ function DynamicComponent({
   onConfirm,
   isLoading,
 }: {
-  trigger: { component: string; message: string; data?: Record<string, unknown> }
+  trigger: { component: string; message?: string; data?: Record<string, unknown> }
   onConfirm: (columns: string[]) => void
   isLoading: boolean
 }) {
   switch (trigger.component) {
     case "ColumnSelector": {
-      // Use columns from trigger.data if provided, else show placeholder set
-      const columns: Column[] = (trigger.data?.columns as Column[]) ?? PLACEHOLDER_COLUMNS
+      const fromApi = columnsFromUiTriggerData(trigger.data)
+      const columns: Column[] = fromApi.length ? fromApi : PLACEHOLDER_COLUMNS
       return (
         <ColumnSelector
-          message={trigger.message}
+          message={trigger.message ?? "Select columns for ingestion"}
           columns={columns}
           onConfirm={onConfirm}
           isLoading={isLoading}
@@ -397,18 +366,34 @@ function DynamicComponent({
       )
     }
 
+    case "SchemaApproval": {
+      const ddl = typeof trigger.data?.ddl === "string" ? trigger.data.ddl : ""
+      return (
+        <div className="p-4 rounded-xl border border-border bg-card text-sm space-y-2">
+          <p className="font-semibold text-on-surface">{trigger.message ?? "Schema approval"}</p>
+          {ddl ? (
+            <pre className="text-xs font-mono whitespace-pre-wrap break-words max-h-64 overflow-auto bg-muted p-3 rounded-lg">
+              {ddl}
+            </pre>
+          ) : (
+            <p className="text-on-surface-variant">No DDL in trigger payload.</p>
+          )}
+        </div>
+      )
+    }
+
     case "AuthForm":
       return (
         <div className="p-4 rounded-xl border border-amber-200 bg-amber-50 text-sm text-amber-800">
           <p className="font-semibold mb-1">Authentication required</p>
-          <p>{trigger.message}</p>
+          <p>{trigger.message ?? ""}</p>
         </div>
       )
 
     default:
       return (
         <div className="p-3 rounded-xl border border-border bg-muted text-sm text-on-surface-variant">
-          <span className="font-mono">{trigger.component}</span>: {trigger.message}
+          <span className="font-mono">{trigger.component}</span>: {trigger.message ?? ""}
         </div>
       )
   }

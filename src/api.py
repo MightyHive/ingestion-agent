@@ -96,6 +96,119 @@ def _sse_headers() -> dict[str, str]:
     }
 
 
+def _field_strs_from_api_spec(artifacts: dict[str, Any]) -> list[str]:
+    spec = artifacts.get("api_spec")
+    if not isinstance(spec, dict):
+        return []
+    raw = spec.get("available_fields")
+    if not isinstance(raw, list) or not raw:
+        return []
+    return [str(x).strip() for x in raw if str(x).strip()]
+
+
+def _field_strs_from_researcher_events(event_bus: list[dict]) -> list[str]:
+    """Build API field names from the latest successful api_researcher LOL payload."""
+    for ev in reversed(event_bus):
+        if ev.get("id") != "api_researcher" or ev.get("status") == "ERR":
+            continue
+        payload = ev.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        fields = payload.get("available_fields")
+        if not isinstance(fields, list):
+            continue
+        names: list[str] = []
+        for item in fields:
+            if isinstance(item, dict):
+                af = item.get("api_field")
+                if af is None:
+                    continue
+                s = str(af).strip()
+                if s and s != "NOT_AVAILABLE" and not s.startswith("DERIVED("):
+                    names.append(s)
+            elif isinstance(item, str) and item.strip():
+                names.append(item.strip())
+        if names:
+            return names
+    return []
+
+
+def _column_selector_field_strs(artifacts: dict[str, Any], event_bus: list[dict]) -> list[str]:
+    from_spec = _field_strs_from_api_spec(artifacts)
+    if from_spec:
+        return from_spec
+    return _field_strs_from_researcher_events(event_bus)
+
+
+def _parse_last_msg_content(final_state: dict[str, Any], event_bus: list[dict]) -> dict[str, Any]:
+    """
+    Prefer structured JSON from LangGraph ``messages[-1].content`` when present;
+    otherwise use the last event_bus entry payload (current graph stores LOL payloads there).
+    """
+    last_msg_content: dict[str, Any] = {}
+    msgs = final_state.get("messages")
+    if isinstance(msgs, list) and msgs:
+        raw_last = msgs[-1]
+        content: Any = None
+        if isinstance(raw_last, dict):
+            content = raw_last.get("content")
+        else:
+            content = getattr(raw_last, "content", None)
+        if isinstance(content, str) and content.strip():
+            try:
+                parsed = json.loads(content.strip())
+                if isinstance(parsed, dict):
+                    last_msg_content = parsed
+            except Exception:
+                pass
+    if not last_msg_content and event_bus:
+        last_e = event_bus[-1]
+        pl = last_e.get("payload")
+        if isinstance(pl, dict):
+            last_msg_content = pl
+    return last_msg_content
+
+
+def _schema_preview_rows_for_ui(raw: list[Any]) -> list[dict[str, Any]]:
+    """Ensure each schema_preview row includes a string ``description`` for the frontend."""
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        row = dict(item)
+        desc = row.get("description")
+        row["description"] = desc.strip() if isinstance(desc, str) else ""
+        out.append(row)
+    return out
+
+
+def _schema_approval_table_name(
+    last_msg_content: dict[str, Any], artifacts: dict[str, Any]
+) -> str:
+    """Resolve display table name for SchemaApproval from architect payload or artifacts."""
+    for candidate in (last_msg_content.get("table_name"), artifacts.get("table_name")):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return "Pending Schema"
+
+
+def _should_offer_schema_approval(last_event: dict[str, Any] | None, payload: dict[str, Any]) -> bool:
+    """True when Data Architect just produced a schema/DDL worth reviewing (not stale artifacts alone)."""
+    if not last_event or last_event.get("id") != "data_architect":
+        return False
+    if last_event.get("status") == "ERR":
+        return False
+    if "schema_preview" in payload:
+        sp = payload.get("schema_preview")
+        if isinstance(sp, list) and len(sp) > 0:
+            return True
+    if "proposed_ddl" in payload:
+        pd = payload.get("proposed_ddl")
+        if isinstance(pd, str) and pd.strip():
+            return True
+    return False
+
+
 async def _sse_graph_stream(*, session_id: str, input_state: dict) -> AsyncIterator[str]:
     graph = get_compiled_graph()
     config = {"configurable": {"thread_id": session_id}}
@@ -112,11 +225,71 @@ async def _sse_graph_stream(*, session_id: str, input_state: dict) -> AsyncItera
 
     snap = await graph.aget_state(config)
     final_state = getattr(snap, "values", None) or {}
+    if not isinstance(final_state, dict):
+        final_state = {}
     eb = final_state.get("event_bus") or []
-    requires_human_input = bool(eb and eb[-1].get("status") == "WARN")
-    ui_trigger = None
+    if not isinstance(eb, list):
+        eb = []
+    eb = [e for e in eb if isinstance(e, dict)]
+
+    artifacts = final_state.get("artifacts") or {}
+    if not isinstance(artifacts, dict):
+        artifacts = {}
+
+    last_msg_content = _parse_last_msg_content(final_state, eb)
+    last_ev: dict[str, Any] | None = eb[-1] if eb else None
+    last_warn = bool(last_ev.get("status") == "WARN") if last_ev else False
+
+    schema_ui = _should_offer_schema_approval(last_ev, last_msg_content)
+    field_strs = _column_selector_field_strs(artifacts, eb)
+    # Column picker when we have a field list and this turn is not the Data Architect schema step.
+    column_ui = bool(field_strs) and not schema_ui
+
+    requires_human_input = last_warn or schema_ui or column_ui
+
+    ui_trigger: dict[str, Any] | None = None
     if requires_human_input:
-        ui_trigger = {"component": "ColumnSelector", "message": "Select columns"}
+        if schema_ui:
+            raw_cols = last_msg_content.get("schema_preview", [])
+            columns = (
+                _schema_preview_rows_for_ui(raw_cols)
+                if isinstance(raw_cols, list)
+                else []
+            )
+            ddl_val = artifacts.get("table_ddl", "")
+            ddl_str = ddl_val.strip() if isinstance(ddl_val, str) else ""
+            table_name = _schema_approval_table_name(last_msg_content, artifacts)
+            ui_trigger = {
+                "component": "SchemaApproval",
+                "message": "Review and approve the proposed schema",
+                "data": {
+                    "ddl": ddl_str,
+                    "columns": columns,
+                    "tableName": table_name,
+                },
+            }
+        elif "api_spec" in artifacts:
+            api_spec = artifacts["api_spec"]
+            if isinstance(api_spec, dict):
+                raw_fields = api_spec.get("available_fields", [])
+                fields = raw_fields if isinstance(raw_fields, list) else []
+                ui_trigger = {
+                    "component": "ColumnSelector",
+                    "message": "Select columns for ingestion",
+                    "data": {"available_fields": fields},
+                }
+        elif field_strs:
+            ui_trigger = {
+                "component": "ColumnSelector",
+                "message": "Select columns for ingestion",
+                "data": {"available_fields": field_strs},
+            }
+        else:
+            ui_trigger = {
+                "component": "ColumnSelector",
+                "message": "Select columns for ingestion",
+                "data": {"available_fields": []},
+            }
     final_payload = {
         "type": "final",
         "response_text": final_state.get("final_response") or "",

@@ -503,14 +503,17 @@ def apply_save_api_contract(
     pagination: str,
     method: str,
     headers_required: list[str],
+    available_fields: list[str] | None = None,
 ) -> ToolOutput:
     """Write ``api_spec`` into ``artifact_sidecar`` when the graph wired a sidecar dict."""
+    fields_norm = [str(f).strip() for f in (available_fields or []) if str(f).strip()]
     spec = {
         "base_url": (base_url or "").strip(),
         "auth_type": (auth_type or "").strip(),
         "pagination": (pagination or "").strip(),
         "method": (method or "").strip().upper(),
         "headers_required": [str(h).strip() for h in (headers_required or []) if str(h).strip()],
+        "available_fields": fields_norm,
     }
     if artifact_sidecar is not None:
         artifact_sidecar["api_spec"] = spec
