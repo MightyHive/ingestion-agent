@@ -144,7 +144,11 @@ def _propose_bq_schema(selected_fields_json:str, platform:str, project_id:str = 
         col_name = _api_field_to_column_name(api_field)
         bq_type = _BQ_TYPE_MAP.get(field.get("type", "STRING"), "STRING")
         mode = "NULLABLE"
-        description = field.get("note", "")
+        note = (field.get("note") or "").strip()
+        label = (field.get("label") or "").strip()
+        semantics = (field.get("semantics") or "").strip()
+        parts = [p for p in (note, semantics) if p]
+        description = " ".join(parts) if parts else (label or f"API field {api_field}")
         schema_preview.append({
             "field_name": col_name,
             "type": bq_type,

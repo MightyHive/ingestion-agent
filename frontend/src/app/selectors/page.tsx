@@ -1,14 +1,9 @@
 "use client"
 
 import { useRouter } from "next/navigation"
+import { AgentProgressPanel } from "@/components/agents/AgentProgressPanel"
 import { useConnectorStore } from "@/lib/stores/connectorStore"
 import ColumnSelector from "@/components/connectors/ColumnSelector"
-
-const NODE_LABELS: Record<string, string> = {
-  coordinator:    "Coordinating Agent",
-  api_researcher: "API Researcher",
-  data_architect: "Data Architect",
-}
 
 export default function SelectorsPage() {
   const router = useRouter()
@@ -28,9 +23,9 @@ export default function SelectorsPage() {
     return (
       <div className="flex flex-col items-center justify-center gap-4 py-20">
         <span className="material-symbols-outlined text-4xl text-on-surface-variant">hub</span>
-        <p className="text-sm text-on-surface-variant">No hay ningún conector activo.</p>
+        <p className="text-sm text-on-surface-variant">No active connector.</p>
         <button onClick={() => router.push("/connectors")} className="text-sm font-semibold text-primary hover:underline">
-          Ir a Connectors
+          Go to Connectors
         </button>
       </div>
     )
@@ -41,26 +36,16 @@ export default function SelectorsPage() {
       <div>
         <h1 className="text-2xl font-semibold text-on-surface">Selectors</h1>
         <p className="text-sm text-on-surface-variant mt-0.5">
-          {connectorName ? `Available fields of ${connectorName}. Choose the ones you need for extraction.` : "Investigating the API.."}
+          {connectorName
+            ? `Available fields for ${connectorName}. Choose the columns you need for extraction.`
+            : "Investigating the API…"}
         </p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-6">
         <div className="bg-card rounded-2xl border border-border p-6">
           {isInvestigating && (
-            <div className="flex flex-col gap-3">
-              <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-2">Agent progress</p>
-              {completedNodes.map((node) => (
-                <div key={node} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200">
-                  <span className="material-symbols-outlined text-emerald-600 text-base">check_circle</span>
-                  <span className="text-sm font-medium text-emerald-800">{NODE_LABELS[node] ?? node}</span>
-                </div>
-              ))}
-              <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-blue-50 border border-blue-200">
-                <span className="material-symbols-outlined text-blue-600 text-base animate-spin">sync</span>
-                <span className="text-sm font-medium text-blue-800">Investigando la API...</span>
-              </div>
-            </div>
+            <AgentProgressPanel completedNodes={completedNodes} active={isInvestigating} />
           )}
           {investigationError && (
             <div className="flex items-center gap-2 p-3 rounded-xl bg-red-50 border border-red-200 text-sm text-red-700">
@@ -70,7 +55,7 @@ export default function SelectorsPage() {
           )}
           {!isInvestigating && fields.length > 0 && (
             <ColumnSelector
-              message={`Investigué la API. Encontré ${fields.length} campos disponibles. Seleccioná los que querés extraer.`}
+              message={`API investigation complete. ${fields.length} fields are available — select those to extract.`}
               columns={fields}
               onConfirm={handleConfirm}
             />
@@ -79,13 +64,11 @@ export default function SelectorsPage() {
 
         <div className="flex flex-col gap-4">
           <div className="bg-card rounded-2xl border border-border p-5">
-            <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-3">Conector activo</p>
+            <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-3">Active connector</p>
             <p className="text-sm font-semibold text-on-surface">{connectorName ?? "—"}</p>
-            {fields.length > 0 && <p className="text-xs text-on-surface-variant mt-1">{fields.length} campos disponibles</p>}
-          </div>
-          <div className="bg-card rounded-2xl border border-border p-5">
-            <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-2">Session</p>
-            <p className="text-xs font-mono text-on-surface-variant break-all">{sessionId ?? "—"}</p>
+            {fields.length > 0 && (
+              <p className="text-xs text-on-surface-variant mt-1">{fields.length} fields available</p>
+            )}
           </div>
         </div>
       </div>

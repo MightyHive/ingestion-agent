@@ -113,7 +113,7 @@ export function useAgentStream() {
         await readStream(response, onProgress, onFinal, onConnected)
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Error desconocido")
+      setError(err instanceof Error ? err.message : "Unknown error")
       setIsLoading(false)
     }
   }, [])

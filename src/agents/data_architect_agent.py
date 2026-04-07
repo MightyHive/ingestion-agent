@@ -68,7 +68,8 @@ The tool returns: table_name, schema_preview, proposed_ddl, sql_preview.
 From the tool output, populate:
   - payload.table_name
   - payload.dataset_target
-  - payload.schema_preview  ← list of BQSchemaField objects
+  - payload.schema_preview  ← list of BQSchemaField objects (each row MUST include ``description``:
+    use the tool's text when present; otherwise combine API ``label``, ``note``, and ``semantics`` so the UI never shows empty metadata)
   - payload.proposed_ddl    ← the CREATE TABLE statement
   - payload.sql_preview     ← illustrative SELECT
   - payload.selected_fields ← list of api_field strings that were passed in

@@ -183,7 +183,11 @@ export async function* mockSubmitInputStream(
     ui_trigger: {
       component: "SchemaApproval",
       message: "Revisá el DDL propuesto.",
-      data: { ddl: proposal.ddl, columns: proposal.columns },
+      data: {
+        ddl: proposal.ddl,
+        columns: proposal.columns,
+        tableName: proposal.tableName,
+      },
     },
   })}\n\n`
 }

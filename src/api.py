@@ -169,6 +169,29 @@ def _parse_last_msg_content(final_state: dict[str, Any], event_bus: list[dict]) 
     return last_msg_content
 
 
+def _schema_preview_rows_for_ui(raw: list[Any]) -> list[dict[str, Any]]:
+    """Ensure each schema_preview row includes a string ``description`` for the frontend."""
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        row = dict(item)
+        desc = row.get("description")
+        row["description"] = desc.strip() if isinstance(desc, str) else ""
+        out.append(row)
+    return out
+
+
+def _schema_approval_table_name(
+    last_msg_content: dict[str, Any], artifacts: dict[str, Any]
+) -> str:
+    """Resolve display table name for SchemaApproval from architect payload or artifacts."""
+    for candidate in (last_msg_content.get("table_name"), artifacts.get("table_name")):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return "Pending Schema"
+
+
 def _should_offer_schema_approval(last_event: dict[str, Any] | None, payload: dict[str, Any]) -> bool:
     """True when Data Architect just produced a schema/DDL worth reviewing (not stale artifacts alone)."""
     if not last_event or last_event.get("id") != "data_architect":
@@ -228,15 +251,21 @@ async def _sse_graph_stream(*, session_id: str, input_state: dict) -> AsyncItera
     if requires_human_input:
         if schema_ui:
             raw_cols = last_msg_content.get("schema_preview", [])
-            columns = raw_cols if isinstance(raw_cols, list) else []
+            columns = (
+                _schema_preview_rows_for_ui(raw_cols)
+                if isinstance(raw_cols, list)
+                else []
+            )
             ddl_val = artifacts.get("table_ddl", "")
             ddl_str = ddl_val.strip() if isinstance(ddl_val, str) else ""
+            table_name = _schema_approval_table_name(last_msg_content, artifacts)
             ui_trigger = {
                 "component": "SchemaApproval",
                 "message": "Review and approve the proposed schema",
                 "data": {
                     "ddl": ddl_str,
                     "columns": columns,
+                    "tableName": table_name,
                 },
             }
         elif "api_spec" in artifacts:

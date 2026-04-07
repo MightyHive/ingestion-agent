@@ -4,6 +4,7 @@ import { useSearchParams, useRouter } from "next/navigation"
 import { useEffect, useState } from "react"
 import { useAgentStream } from "@/lib/hooks/useAgentStream"
 import { getConnectorSessionId } from "@/lib/sessions"
+import { AgentProgressPanel } from "@/components/agents/AgentProgressPanel"
 import ColumnSelector, { type Column } from "@/components/connectors/ColumnSelector"
 import { columnsFromUiTriggerData } from "@/lib/ui-trigger-fields"
 import { cn } from "@/lib/utils"
@@ -193,34 +194,11 @@ export default function NewConnectorPage() {
             <div className="flex flex-col gap-4">
               {/* Progress nodes */}
               {(isLoading || completedNodes.length > 0) && (
-                <div className="space-y-2">
-                  <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider">
-                    Agent progress
-                  </p>
-                  {completedNodes.map((node) => (
-                    <div
-                      key={node}
-                      className="flex items-center gap-3 px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200"
-                    >
-                      <span className="material-symbols-outlined text-emerald-600 text-base">
-                        check_circle
-                      </span>
-                      <span className="text-sm font-medium text-emerald-800">
-                        {NODE_LABELS[node] ?? node}
-                      </span>
-                    </div>
-                  ))}
-                  {isLoading && (
-                    <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-blue-50 border border-blue-200">
-                      <span className="material-symbols-outlined text-blue-600 text-base animate-spin">
-                        sync
-                      </span>
-                      <span className="text-sm font-medium text-blue-800">
-                        Thinking...
-                      </span>
-                    </div>
-                  )}
-                </div>
+                <AgentProgressPanel
+                  completedNodes={completedNodes}
+                  active={isLoading}
+                  nodeLabels={NODE_LABELS}
+                />
               )}
 
               {/* Final response text */}
@@ -313,16 +291,6 @@ export default function NewConnectorPage() {
               </div>
             </div>
           )}
-
-          {/* Session info */}
-          <div className="bg-card rounded-2xl border border-border p-5">
-            <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-2">
-              Session
-            </p>
-            <p className="text-xs font-mono text-on-surface-variant break-all">
-              {sessionId}
-            </p>
-          </div>
         </div>
       </div>
     </div>
