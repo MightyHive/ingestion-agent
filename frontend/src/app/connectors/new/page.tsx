@@ -2,7 +2,7 @@
 
 import { useSearchParams, useRouter } from "next/navigation"
 import { useEffect, useState } from "react"
-import { useAgentStream } from "@/lib/hooks/useAgentStream"
+import { useConnectorStore } from "@/lib/stores/connectorStore"
 import { getConnectorSessionId } from "@/lib/sessions"
 import { AgentProgressPanel } from "@/components/agents/AgentProgressPanel"
 import ColumnSelector, { type Column } from "@/components/connectors/ColumnSelector"
@@ -92,15 +92,20 @@ export default function NewConnectorPage() {
     getConnectorSessionId(preselected || "new")
   )
 
-  const { isLoading, completedNodes, finalResponse, error, startChat, submitInput, reset } =
-    useAgentStream()
+  const store = useConnectorStore()
 
   const meta = CONNECTOR_META[connectorId]
 
-  // When the agent returns a final response, move to agent step to show result
+  const isLoading = store.isInvestigating || store.isProposing
+  const error = store.investigationError || store.proposalError
+  const lastMsg = store.messages[store.messages.length - 1]
+  const responseText =
+    lastMsg?.type === "assistant" ? lastMsg.content : ""
+
+  // schemaProposal is populated by the store when SSE returns SchemaApproval; navigate only.
   useEffect(() => {
-    if (finalResponse) setStep("agent")
-  }, [finalResponse])
+    if (store.schemaProposal) router.push("/schema")
+  }, [store.schemaProposal, router])
 
   // ── Step: Choose connector ─────────────────────────────────────────────────
 
@@ -112,17 +117,18 @@ export default function NewConnectorPage() {
   // ── Step: Auth → trigger agent ────────────────────────────────────────────
 
   function handleConnect() {
-    if (!connectorId) return
+    if (!connectorId || !meta) return
     setStep("agent")
-    reset()
-    startChat(sessionId, `Quiero conectar ${meta.name}`)
+    store.setConnector(connectorId, meta.name, sessionId)
+    void store.startInvestigation(sessionId, `Quiero conectar ${meta.name}`)
   }
 
   // ── Step: ColumnSelector submit ───────────────────────────────────────────
 
   function handleColumnsConfirm(columns: string[]) {
-    reset()
-    submitInput(sessionId, { columns })
+    // ``columns`` is what the API graph expects in the serialized dict; ``columns_selected``
+    // is read by the store’s mock stream (see connectorStore.submitUserInput).
+    void store.submitUserInput(sessionId, { columns, columns_selected: columns })
   }
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -193,31 +199,29 @@ export default function NewConnectorPage() {
           {step === "agent" && (
             <div className="flex flex-col gap-4">
               {/* Progress nodes */}
-              {(isLoading || completedNodes.length > 0) && (
+              {(isLoading || store.completedNodes.length > 0) && (
                 <AgentProgressPanel
-                  completedNodes={completedNodes}
+                  completedNodes={store.completedNodes}
                   active={isLoading}
                   nodeLabels={NODE_LABELS}
                 />
               )}
 
-              {/* Final response text */}
-              {finalResponse?.response_text && (
+              {/* Latest assistant turn from the store (SSE final response_text) */}
+              {responseText ? (
                 <div className="flex items-start gap-3 p-3 rounded-xl bg-accent/40 border border-accent">
                   <span className="material-symbols-outlined text-primary text-base mt-0.5 flex-shrink-0">
                     smart_toy
                   </span>
-                  <p className="text-sm text-on-surface">
-                    {finalResponse.response_text}
-                  </p>
+                  <p className="text-sm text-on-surface">{responseText}</p>
                 </div>
-              )}
+              ) : null}
 
-              {/* Dynamic UI trigger */}
-              {finalResponse?.requires_human_input &&
-                finalResponse.ui_trigger && (
+              {/* Inline HITL: ColumnSelector, AuthForm, etc. (SchemaApproval → schemaProposal + redirect) */}
+              {store.uiTrigger &&
+                store.uiTrigger.component !== "SchemaApproval" && (
                   <DynamicComponent
-                    trigger={finalResponse.ui_trigger}
+                    trigger={store.uiTrigger}
                     onConfirm={handleColumnsConfirm}
                     isLoading={isLoading}
                   />
@@ -366,22 +370,6 @@ function DynamicComponent({
       )
     }
 
-    case "SchemaApproval": {
-      const ddl = typeof trigger.data?.ddl === "string" ? trigger.data.ddl : ""
-      return (
-        <div className="p-4 rounded-xl border border-border bg-card text-sm space-y-2">
-          <p className="font-semibold text-on-surface">{trigger.message ?? "Schema approval"}</p>
-          {ddl ? (
-            <pre className="text-xs font-mono whitespace-pre-wrap break-words max-h-64 overflow-auto bg-muted p-3 rounded-lg">
-              {ddl}
-            </pre>
-          ) : (
-            <p className="text-on-surface-variant">No DDL in trigger payload.</p>
-          )}
-        </div>
-      )
-    }
-
     case "AuthForm":
       return (
         <div className="p-4 rounded-xl border border-amber-200 bg-amber-50 text-sm text-amber-800">
@@ -399,7 +387,7 @@ function DynamicComponent({
   }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Helpers ─────────────────────────────────────────────────────────────────--
 
 function getPrerequisites(connectorId: string): string[] {
   const map: Record<string, string[]> = {
