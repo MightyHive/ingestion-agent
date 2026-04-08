@@ -562,7 +562,7 @@ async def data_architect_node(state: AgentGraphState) -> dict:
         )
         lol = result.output.model_dump()
         return lol, extract_usage(result)
-
+    
     default_payload = DataArchitectLOL(
         status="ERR",
         reason="Data architect failure.",
@@ -606,6 +606,7 @@ async def data_architect_node(state: AgentGraphState) -> dict:
         _invoke,
         default_payload,
         instruction_override=merged_instruction.strip(),
+        max_retries=5
     )
     ddl = (ddl_sidecar.get("table_ddl") or "").strip()
     if not ddl and node_out.get("event_bus"):

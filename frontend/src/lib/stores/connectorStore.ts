@@ -7,25 +7,45 @@ import { mockAgentStream, mockSubmitInputStream } from "@/lib/mock-agent"
 const IS_MOCK = process.env.NEXT_PUBLIC_MOCK === "true"
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"
 
+// --- Tipos de Soporte ---
+
 export interface ChatMessage {
   type: string
   content: string
 }
 
-/** Rich ui_trigger from FastAPI final SSE event (ColumnSelector, SchemaApproval, …). */
 export type UiTriggerState = {
   component: string
   message?: string
   data?: Record<string, unknown>
 } | null
 
+export interface SchemaColumn {
+  name: string
+  original: string
+  type: string
+  mode: "NULLABLE" | "REQUIRED"
+  description?: string
+}
+
+export interface ScheduleConfig {
+  frequency: "hourly" | "daily" | "weekly" | "monthly"
+  time: string
+  isReady: boolean
+}
+
+export interface SchemaProposal {
+  tableName: string
+  columns: SchemaColumn[]
+  ddl: string
+}
+
+// --- Helpers de Utilidad ---
+
 function isRecord(x: unknown): x is Record<string, unknown> {
   return typeof x === "object" && x !== null
 }
 
-/**
- * Keep the first item for each key; later duplicates are dropped (order preserved).
- */
 function dedupeByStableKey<T>(items: readonly T[], keyOf: (item: T) => string): T[] {
   const seen = new Set<string>()
   const out: T[] = []
@@ -46,7 +66,10 @@ function dedupeFieldIdList(ids: string[]): string[] {
   return dedupeByStableKey(ids, (s) => s)
 }
 
-/** Append decoded text, split on SSE event boundaries; only parse complete `data:` JSON lines. */
+function dedupeSchemaColumnsByFieldName(columns: SchemaColumn[]): SchemaColumn[] {
+  return dedupeByStableKey(columns, (c) => c.name)
+}
+
 function feedSseBuffer(buffer: string, chunk: string): { buffer: string; events: unknown[] } {
   buffer += chunk
   const events: unknown[] = []
@@ -57,12 +80,12 @@ function feedSseBuffer(buffer: string, chunk: string): { buffer: string; events:
     if (!line) continue
     try {
       events.push(JSON.parse(line))
-    } catch {
-      // Malformed JSON for this chunk — skip
-    }
+    } catch { }
   }
   return { buffer: rest, events }
 }
+
+// --- Definición del Store ---
 
 interface ConnectorStore {
   connectorId: string | null
@@ -76,11 +99,14 @@ interface ConnectorStore {
   schemaProposal: SchemaProposal | null
   isProposing: boolean
   proposalError: string | null
-
   messages: ChatMessage[]
   uiTrigger: UiTriggerState
   abortController: AbortController | null
+  
+  // Scheduler State
+  scheduleConfig: ScheduleConfig | null
 
+  // Actions
   setConnector: (id: string, name: string, sessionId: string) => void
   setInvestigating: (value: boolean) => void
   addCompletedNode: (node: string) => void
@@ -92,45 +118,19 @@ interface ConnectorStore {
   setProposalError: (error: string | null) => void
   startInvestigation: (sessionId: string, message: string) => Promise<void>
   submitUserInput: (sessionId: string, userInput: unknown) => Promise<void>
-  /** Edit schema preview by stable source field id (`original`); recomputes DDL locally. */
   updateSchemaColumnName: (sourceOriginal: string, name: string) => void
   updateSchemaColumnType: (sourceOriginal: string, type: string) => void
   updateSchemaColumnMode: (sourceOriginal: string, mode: "NULLABLE" | "REQUIRED") => void
   abortStream: () => void
+  setScheduleConfig: (config: Partial<ScheduleConfig>) => void
   reset: () => void
 }
 
-export interface SchemaColumn {
-  name: string
-  original: string
-  type: string
-  mode: "NULLABLE" | "REQUIRED"
-  description?: string
-}
-
-function dedupeSchemaColumnsByFieldName(columns: SchemaColumn[]): SchemaColumn[] {
-  return dedupeByStableKey(columns, (c) => c.name)
-}
-
-export interface SchemaProposal {
-  tableName: string
-  columns: SchemaColumn[]
-  ddl: string
-}
-
-/** Map FastAPI ``schema_preview`` / BQSchemaField rows into store columns. */
 function schemaColumnsFromUiTrigger(raw: unknown): SchemaColumn[] {
   if (!Array.isArray(raw)) return []
   const mapped = raw.map((item): SchemaColumn => {
-    if (!isRecord(item)) {
-      return { name: "", original: "", type: "STRING", mode: "NULLABLE" }
-    }
-    const fieldName =
-      typeof item.field_name === "string"
-        ? item.field_name
-        : typeof item.name === "string"
-          ? item.name
-          : ""
+    if (!isRecord(item)) return { name: "", original: "", type: "STRING", mode: "NULLABLE" }
+    const fieldName = typeof item.field_name === "string" ? item.field_name : typeof item.name === "string" ? item.name : ""
     return {
       name: fieldName,
       original: typeof item.original === "string" ? item.original : fieldName,
@@ -157,9 +157,10 @@ const initialState = {
   messages: [] as ChatMessage[],
   uiTrigger: null as UiTriggerState,
   abortController: null as AbortController | null,
+  scheduleConfig: null,
 }
 
-export const useConnectorStore = create<ConnectorStore>((set, get) => ({
+export const useConnectorStore = create<ConnectorStore>()((set, get) => ({
   ...initialState,
 
   setConnector: (id, name, sessionId) => {
@@ -204,6 +205,14 @@ export const useConnectorStore = create<ConnectorStore>((set, get) => ({
 
   setProposalError: (error) => set({ proposalError: error, isProposing: false }),
 
+  // --- Lógica del Scheduler ---
+  setScheduleConfig: (config) => 
+    set((state) => ({
+      scheduleConfig: state.scheduleConfig 
+        ? { ...state.scheduleConfig, ...config } 
+        : { frequency: "daily", time: "00:00", isReady: false, ...config } as ScheduleConfig
+    })),
+
   abortStream: () => {
     const ac = get().abortController
     if (ac) ac.abort()
@@ -231,25 +240,18 @@ export const useConnectorStore = create<ConnectorStore>((set, get) => ({
         if (type === "progress" && typeof raw.node === "string") {
           set((state) => ({ completedNodes: [...state.completedNodes, raw.node as string] }))
         } else if (type === "final") {
-          const responseText =
-            typeof raw.response_text === "string" ? raw.response_text : ""
+          const responseText = typeof raw.response_text === "string" ? raw.response_text : ""
           const utRaw = raw.ui_trigger
           set((state) => {
-            const uiTrigger: UiTriggerState =
-              isRecord(utRaw)
-                ? {
-                    component: String(utRaw.component ?? ""),
-                    message:
-                      typeof utRaw.message === "string" ? utRaw.message : undefined,
-                    data: isRecord(utRaw.data) ? utRaw.data : undefined,
-                  }
-                : null
+            const uiTrigger: UiTriggerState = isRecord(utRaw)
+              ? {
+                  component: String(utRaw.component ?? ""),
+                  message: typeof utRaw.message === "string" ? utRaw.message : undefined,
+                  data: isRecord(utRaw.data) ? utRaw.data : undefined,
+                }
+              : null
             let fields = state.fields
-            if (
-              isRecord(utRaw) &&
-              utRaw.component === "ColumnSelector" &&
-              isRecord(utRaw.data)
-            ) {
+            if (isRecord(utRaw) && utRaw.component === "ColumnSelector" && isRecord(utRaw.data)) {
               const mapped = columnsFromUiTriggerData(utRaw.data)
               if (mapped.length) fields = dedupeColumnsByDomainId(mapped)
             }
@@ -258,10 +260,7 @@ export const useConnectorStore = create<ConnectorStore>((set, get) => ({
               abortController: null,
               uiTrigger,
               fields,
-              messages: [
-                ...state.messages,
-                { type: "assistant", content: responseText },
-              ],
+              messages: [...state.messages, { type: "assistant", content: responseText }],
             }
           })
         }
@@ -285,21 +284,14 @@ export const useConnectorStore = create<ConnectorStore>((set, get) => ({
           body: JSON.stringify({ session_id: sessionId, message }),
           signal: ac.signal,
         })
-
-        if (!response.ok || !response.body) {
-          throw new Error(`HTTP ${response.status}`)
-        }
-
+        if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`)
         const reader = response.body.getReader()
         const decoder = new TextDecoder()
         let buffer = ""
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
-          const { buffer: nextBuf, events } = feedSseBuffer(
-            buffer,
-            decoder.decode(value, { stream: true })
-          )
+          const { buffer: nextBuf, events } = feedSseBuffer(buffer, decoder.decode(value, { stream: true }))
           buffer = nextBuf
           applySseEvents(events)
         }
@@ -310,16 +302,12 @@ export const useConnectorStore = create<ConnectorStore>((set, get) => ({
         return
       }
       set({
-        investigationError:
-          e instanceof Error ? e.message : "Failed to investigate the API",
+        investigationError: e instanceof Error ? e.message : "Failed to investigate the API",
         isInvestigating: false,
         abortController: null,
       })
     } finally {
-      set((s) => {
-        if (s.abortController !== ac) return {}
-        return { isInvestigating: false, abortController: null }
-      })
+      set((s) => s.abortController === ac ? { isInvestigating: false, abortController: null } : {})
     }
   },
 
@@ -328,12 +316,7 @@ export const useConnectorStore = create<ConnectorStore>((set, get) => ({
     if (prev) prev.abort()
 
     const ac = new AbortController()
-    set({
-      isProposing: true,
-      proposalError: null,
-      abortController: ac,
-      completedNodes: [],
-    })
+    set({ isProposing: true, proposalError: null, abortController: ac, completedNodes: [] })
 
     const applySseEvents = (events: unknown[]) => {
       for (const raw of events) {
@@ -347,38 +330,16 @@ export const useConnectorStore = create<ConnectorStore>((set, get) => ({
             const uiTrigger: UiTriggerState = isRecord(utRaw)
               ? {
                   component: String(utRaw.component ?? ""),
-                  message:
-                    typeof utRaw.message === "string" ? utRaw.message : undefined,
+                  message: typeof utRaw.message === "string" ? utRaw.message : undefined,
                   data: isRecord(utRaw.data) ? utRaw.data : undefined,
                 }
               : null
-
-            const base = {
-              abortController: null as AbortController | null,
-              uiTrigger,
-              isProposing: false,
-            }
-
-            if (
-              isRecord(utRaw) &&
-              utRaw.component === "SchemaApproval" &&
-              isRecord(utRaw.data) &&
-              typeof utRaw.data.ddl === "string"
-            ) {
+            const base = { abortController: null as AbortController | null, uiTrigger, isProposing: false }
+            if (isRecord(utRaw) && utRaw.component === "SchemaApproval" && isRecord(utRaw.data) && typeof utRaw.data.ddl === "string") {
               const columns = schemaColumnsFromUiTrigger(utRaw.data.columns ?? [])
-              const tnRaw = utRaw.data.tableName
-              const tableName =
-                typeof tnRaw === "string" && tnRaw.trim() ? tnRaw.trim() : "Pending Schema"
-              return {
-                ...base,
-                schemaProposal: {
-                  tableName,
-                  columns,
-                  ddl: utRaw.data.ddl,
-                },
-              }
+              const tableName = typeof utRaw.data.tableName === "string" && utRaw.data.tableName.trim() ? utRaw.data.tableName.trim() : "Pending Schema"
+              return { ...base, schemaProposal: { tableName, columns, ddl: utRaw.data.ddl } }
             }
-
             return base
           })
         }
@@ -388,10 +349,7 @@ export const useConnectorStore = create<ConnectorStore>((set, get) => ({
     try {
       if (IS_MOCK) {
         const connectorId = get().connectorId ?? "meta"
-        const selected =
-          isRecord(userInput) && Array.isArray(userInput.columns_selected)
-            ? (userInput.columns_selected as string[])
-            : []
+        const selected = isRecord(userInput) && Array.isArray(userInput.columns_selected) ? (userInput.columns_selected as string[]) : []
         let buf = ""
         for await (const sseChunk of mockSubmitInputStream(connectorId, selected)) {
           if (ac.signal.aborted) break
@@ -406,21 +364,14 @@ export const useConnectorStore = create<ConnectorStore>((set, get) => ({
           body: JSON.stringify({ session_id: sessionId, user_input: userInput }),
           signal: ac.signal,
         })
-
-        if (!response.ok || !response.body) {
-          throw new Error(`HTTP ${response.status}`)
-        }
-
+        if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`)
         const reader = response.body.getReader()
         const decoder = new TextDecoder()
         let buffer = ""
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
-          const { buffer: nextBuf, events } = feedSseBuffer(
-            buffer,
-            decoder.decode(value, { stream: true })
-          )
+          const { buffer: nextBuf, events } = feedSseBuffer(buffer, decoder.decode(value, { stream: true }))
           buffer = nextBuf
           applySseEvents(events)
         }
@@ -430,17 +381,9 @@ export const useConnectorStore = create<ConnectorStore>((set, get) => ({
         set({ isProposing: false, abortController: null })
         return
       }
-      set({
-        proposalError:
-          e instanceof Error ? e.message : "Failed to generate schema",
-        isProposing: false,
-        abortController: null,
-      })
+      set({ proposalError: e instanceof Error ? e.message : "Failed to generate schema", isProposing: false, abortController: null })
     } finally {
-      set((s) => {
-        if (s.abortController !== ac) return {}
-        return { isProposing: false, abortController: null }
-      })
+      set((s) => s.abortController === ac ? { isProposing: false, abortController: null } : {})
     }
   },
 
