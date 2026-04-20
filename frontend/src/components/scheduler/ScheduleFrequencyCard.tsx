@@ -14,7 +14,7 @@ export default function ScheduleFrequencyCard() {
   const config = scheduleConfig || { frequency: "daily", time: "00:00", isReady: false }
 
   return (
-    <Card>
+    <Card className="w-full max-w-md">
       <CardHeader>
         <CardTitle>Schedule for: {schemaProposal?.tableName || "raw_table"}</CardTitle>
         <CardDescription>Configure frequency and execution time</CardDescription>
@@ -62,7 +62,7 @@ export default function ScheduleFrequencyCard() {
           {/* Si está marcado, aparece el Badge */}
           {config.isReady && (
             <Badge className="bg-green-100 text-green-700 border-green-200 animate-in fade-in zoom-in duration-300">
-              READY
+              READY FOR DEPLOYMENT
             </Badge>
           )}
         </div>
@@ -70,3 +70,4 @@ export default function ScheduleFrequencyCard() {
     </Card>
   )
 }
+
