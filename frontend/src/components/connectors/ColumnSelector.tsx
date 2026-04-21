@@ -15,7 +15,8 @@ interface ColumnSelectorProps {
   message: string
   columns: Column[]
   onConfirm: (selected: string[]) => void
-  isLoading?: boolean
+  isLoading?: boolean,
+  initialSelected?: string[]
 }
 
 const TYPE_COLORS: Record<string, string> = {
@@ -44,8 +45,9 @@ export default function ColumnSelector({
   columns,
   onConfirm,
   isLoading = false,
+  initialSelected = []
 }: ColumnSelectorProps) {
-  const [selected, setSelected]     = useState<Set<string>>(new Set())
+  const [selected, setSelected]     = useState<Set<string>>(new Set(initialSelected || []))
   const [search, setSearch]         = useState("")
   const [activeTab, setActiveTab]   = useState("all")
 

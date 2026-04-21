@@ -1,30 +1,10 @@
 "use client"
 
+import {useEffect, useState} from "react"
 import { useRouter } from "next/navigation"
-import { useState } from "react"
 import { AgentProgressPanel } from "@/components/agents/AgentProgressPanel"
 import { useConnectorStore } from "@/lib/stores/connectorStore"
-
-const BIGQUERY_TYPE_OPTIONS: readonly string[] = [
-  "STRING",
-  "INT64",
-  "FLOAT64",
-  "BOOL",
-  "DATE",
-  "TIMESTAMP",
-  "BYTES",
-  "NUMERIC",
-  "BIGNUMERIC",
-]
-
-function typeSelectOptions(current: string): string[] {
-  const c = current.trim()
-  const set = new Set<string>(BIGQUERY_TYPE_OPTIONS)
-  if (c && !set.has(c)) {
-    return [...BIGQUERY_TYPE_OPTIONS, c]
-  }
-  return [...BIGQUERY_TYPE_OPTIONS]
-}
+import { generateMockSchema } from "@/lib/mock-agent"
 
 function typeColor(type: string): string {
   if (type.includes("FLOAT") || type === "NUMERIC" || type === "BIGNUMERIC")
@@ -36,7 +16,9 @@ function typeColor(type: string): string {
   return "bg-muted text-on-surface-variant"
 }
 
-export default function SchemaPage() {
+export default function TemplateStep({data, onUpdate}: any) {
+  const platform = data.step1?.platform; 
+  const columns = data.step2?.columns || [];
   const router   = useRouter()
   const store    = useConnectorStore()
   const {
@@ -46,11 +28,29 @@ export default function SchemaPage() {
     connectorName,
     selectedFields,
     completedNodes,
-    updateSchemaColumnName,
-    updateSchemaColumnType,
-    updateSchemaColumnMode,
   } = store
   const [copied, setCopied] = useState(false)
+  const [schema, setSchema] = useState(null)
+
+  useEffect(() => {
+    // Solo disparamos la simulación si tenemos los datos y no hay nada en proceso
+    if (platform && columns.length > 0 && !schemaProposal && !isProposing) {
+      
+      const simulateAgent = async () => {
+        store.setProposing(true);
+        store.setSelectedFields(columns);
+        
+        // Simulamos el trabajo del arquitecto
+        await new Promise(r => setTimeout(r, 1500));
+        
+        const proposal = generateMockSchema(platform, columns);
+        store.setSchemaProposal(proposal);
+        store.setProposing(false);
+      };
+  
+      simulateAgent();
+    }
+  }, [platform, columns.length, schemaProposal, isProposing]); // Se ejecuta si algo de esto cambia
 
   function handleApprove() {
     // TODO: call backend to approve and continue to scheduler
@@ -159,39 +159,22 @@ export default function SchemaPage() {
                         <td className="py-2 px-2">
                           <input
                             type="text"
-                            value={col.name}
-                            onChange={(e) =>
-                              updateSchemaColumnName(col.original, e.target.value)
-                            }
+                            defaultValue={col.name}
                             className="w-full min-w-[120px] text-xs font-mono text-primary bg-background border border-border rounded px-2 py-1"
                             aria-label={`BigQuery column name for ${col.original}`}
                           />
                         </td>
                         <td className="py-2 px-2">
                           <select
-                            value={col.type}
-                            onChange={(e) =>
-                              updateSchemaColumnType(col.original, e.target.value)
-                            }
+                            defaultValue={col.type}
                             className={`text-xs font-semibold px-2 py-1 rounded border border-border bg-background ${typeColor(col.type)}`}
                             aria-label={`Type for ${col.original}`}
                           >
-                            {typeSelectOptions(col.type).map((t) => (
-                              <option key={t} value={t}>
-                                {t}
-                              </option>
-                            ))}
                           </select>
                         </td>
                         <td className="py-2 px-2">
                           <select
-                            value={col.mode}
-                            onChange={(e) =>
-                              updateSchemaColumnMode(
-                                col.original,
-                                e.target.value === "REQUIRED" ? "REQUIRED" : "NULLABLE"
-                              )
-                            }
+                            defaultValue={col.mode}
                             className={`text-xs font-medium border border-border rounded bg-background px-2 py-1 ${
                               col.mode === "REQUIRED" ? "text-on-surface" : "text-on-surface-variant"
                             }`}

@@ -6,123 +6,41 @@ import { useConnectorStore } from "@/lib/stores/connectorStore"
 import ColumnSelector from "@/components/connectors/ColumnSelector"
 import { generateMockSchema } from "@/lib/mock-agent" 
 
-const IS_MOCK = process.env.NEXT_PUBLIC_MOCK === "true"
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"
-
-export default function SelectorsPage() {
+// 1. Recibimos data y onUpdate del Padre
+export default function SelectionStep({ data, onUpdate }: any) {
   const router = useRouter()
   const store  = useConnectorStore()
 
+  // Seguimos usando el store para la investigación de campos (que es un proceso global)
   const { 
     connectorId, 
     connectorName, 
     fields, 
     isInvestigating, 
     investigationError, 
-    completedNodes, 
-    sessionId 
+    completedNodes 
   } = store
 
   /**
-   * Lógica de Confirmación con Reintentos (Retry Logic)
-   * Se encarga de enviar la selección al backend y manejar el flujo hacia /schema.
+   * Ahora handleConfirm es más simple: 
+   * Solo le avisa al Padre y al Store local.
    */
   async function handleConfirm(selected: string[]) {
-    const MAX_RETRIES = 3;
-    const RETRY_DELAY = 2000; // 2 segundos
-
-    const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-    // Inicializamos estados y navegamos para dar feedback inmediato
-    store.setSelectedFields(selected)
-    store.setProposalError(null)
-    store.setProposing(true)
-    router.push("/schema")
-
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        if (IS_MOCK) {
-          // Simulación de delay y generación local de esquema
-          await new Promise(r => setTimeout(r, 1800))
-          const proposal = generateMockSchema(connectorId ?? "meta", selected)
-          store.setSchemaProposal(proposal)
-        } else {
-          const response = await fetch(`${API_BASE}/api/submit_input`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ 
-              session_id: sessionId, 
-              user_input: { columns_selected: selected } 
-            }),
-          })
-
-          if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`)
-
-          const reader = response.body.getReader()
-          const decoder = new TextDecoder()
-          let buffer = ""
-
-          // Procesamiento manual del stream SSE
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-            
-            buffer += decoder.decode(value, { stream: true })
-            const chunks = buffer.split("\n\n")
-            buffer = chunks.pop() ?? ""
-
-            for (const chunk of chunks) {
-              const line = chunk.replace(/^data:\s*/, "").trim()
-              if (!line) continue
-              try {
-                const event = JSON.parse(line)
-                // Si recibimos el evento final con la estructura del backend de main:
-                if (event.type === "final" && event.ui_trigger?.data?.ddl) {
-                  const data = event.ui_trigger.data
-                  store.setSchemaProposal({
-                    tableName: data.tableName || "Pending Schema",
-                    columns: data.columns || [],
-                    ddl: data.ddl
-                  })
-                }
-              } catch { /* Ignorar errores de parseo parcial del chunk */ }
-            }
-          }
-        }
-
-        // Si llegamos aquí sin errores, el flujo terminó con éxito
-        return; 
-
-      } catch (err) {
-        console.warn(`Intento ${attempt} fallido:`, err)
-        
-        // Si es el último intento, disparamos el error visual al store
-        if (attempt === MAX_RETRIES) {
-          store.setProposalError(
-            err instanceof Error ? err.message : "Error persistent after retries"
-          )
-          store.setProposing(false)
-        } else {
-          // Espera incremental antes del próximo intento
-          await sleep(RETRY_DELAY * attempt)
-        }
-      }
-    }
+    // Avisamos al Padre (Wizard) para que guarde las columnas en su 'pizarra'
+    onUpdate({ columns: selected });
+    
+    // También actualizamos el store por si otros componentes lo necesitan
+    store.setSelectedFields(selected);
+    
+    // NOTA: Ya no hacemos router.push("/schema") aquí, 
+    // porque de eso se encarga el botón "Next" del Padre.
   }
-
-  // --- Renderizado (Se mantiene el estilo MD3 de main) ---
 
   if (!connectorName && !isInvestigating) {
     return (
       <div className="flex flex-col items-center justify-center gap-4 py-20">
         <span className="material-symbols-outlined text-4xl text-on-surface-variant">hub</span>
         <p className="text-sm text-on-surface-variant">No active connector.</p>
-        <button 
-          onClick={() => router.push("/connectors")} 
-          className="text-sm font-semibold text-primary hover:underline"
-        >
-          Go to Connectors
-        </button>
       </div>
     )
   }
@@ -143,21 +61,28 @@ export default function SelectorsPage() {
           {isInvestigating && (
             <AgentProgressPanel completedNodes={completedNodes} active={isInvestigating} />
           )}
+          
           {investigationError && (
             <div className="flex items-center gap-2 p-3 rounded-xl bg-red-50 border border-red-200 text-sm text-red-700">
               <span className="material-symbols-outlined text-base">error</span>
               {investigationError}
             </div>
           )}
+
           {!isInvestigating && fields.length > 0 && (
             <ColumnSelector
               message={`API investigation complete. ${fields.length} fields are available — select those to extract.`}
               columns={fields}
+              // Aquí pasamos la función que actualiza los datos
               onConfirm={handleConfirm}
+              // OPCIONAL: Podrías pasarle 'data.columns' al ColumnSelector 
+              // para que ya aparezcan tildadas si el usuario vuelve atrás.
+              initialSelected={data?.columns || []} 
             />
           )}
         </div>
 
+        {/* Sidebar de info del conector */}
         <div className="flex flex-col gap-4">
           <div className="bg-card rounded-2xl border border-border p-5">
             <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-3">Active connector</p>
