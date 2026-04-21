@@ -30,13 +30,32 @@ const renderStep = () => {
     }
 }
 
+const ProgressBar = (step / 3) * 100;
+
+
 return (
     <div className="space-y-8 p-6">
       {/*Stepper */}
-      <div className="flex gap-4 mb-8">
-        <div className={`p-2 ${step === 1 ? 'font-bold border-b-2 border-purple-500' : ''}`}>Step 1</div>
-        <div className={`p-2 ${step === 2 ? 'font-bold border-b-2 border-purple-500' : ''}`}>Step 2</div>
-        <div className={`p-2 ${step === 3 ? 'font-bold border-b-2 border-purple-500' : ''}`}>Step 3</div>
+      <div className="flex gap-4 mb-8 items-center">
+         <div  onClick={() => setStep(1)}
+            className={`p-2 cursor-pointer transition-colors hover:text-purple-600 ${step === 1 ? 'font-bold border-b-2 border-purple-500' : ''}`}>
+            Step 1 </div>
+        <div onClick={() => setStep(2)}
+            className={`p-2 cursor-pointer transition-colors hover:text-purple-600 ${step === 2 ? 'font-bold border-b-2 border-purple-500' : ''}`}>
+            Step 2 </div>
+        <div onClick={() => setStep(3)}
+            className={`p-2 cursor-pointer transition-colors hover:text-purple-600 ${step === 3 ? 'font-bold border-b-2 border-purple-500' : ''}`}>
+            Step 3  </div>
+        <div role="progressbar" className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
+        <div 
+            className="h-full bg-[#5c27fe] transition-all duration-500 ease-out" 
+            style={{ width: `${ProgressBar}%` }}
+            aria-valuenow={step} 
+            aria-valuemin={1} 
+            aria-valuemax={3} 
+        />
+        </div>
+        
       </div>
 
       {/* Actual step */}
