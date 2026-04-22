@@ -21,7 +21,7 @@ export type UiTriggerState = {
   data?: Record<string, unknown>
 } | null
 
-export interface SchemaColumn {
+export interface TemplateColumn {
   name: string
   original: string
   type: string
@@ -35,9 +35,9 @@ export interface ScheduleConfig {
   isReady: boolean
 }
 
-export interface SchemaProposal {
+export interface TemplateProposal {
   tableName: string
-  columns: SchemaColumn[]
+  columns: TemplateColumn[]
   ddl: string
 }
 
@@ -67,7 +67,7 @@ function dedupeFieldIdList(ids: string[]): string[] {
   return dedupeByStableKey(ids, (s) => s)
 }
 
-function dedupeSchemaColumnsByFieldName(columns: SchemaColumn[]): SchemaColumn[] {
+function dedupeTemplateColumnsByFieldName(columns: TemplateColumn[]): TemplateColumn[] {
   return dedupeByStableKey(columns, (c) => c.name)
 }
 
@@ -97,7 +97,7 @@ interface ConnectorStore {
   investigationError: string | null
   completedNodes: string[]
   selectedFields: string[]
-  schemaProposal: SchemaProposal | null
+  templateProposal: TemplateProposal | null
   isProposing: boolean
   proposalError: string | null
   messages: ChatMessage[]
@@ -114,7 +114,7 @@ interface ConnectorStore {
   setFields: (fields: FieldRow[]) => void
   setInvestigationError: (error: string | null) => void
   setSelectedFields: (fields: string[]) => void
-  setSchemaProposal: (proposal: SchemaProposal) => void
+  setTemplateProposal: (proposal: TemplateProposal) => void
   setProposing: (value: boolean) => void
   setProposalError: (error: string | null) => void
   startInvestigation: (sessionId: string, message: string) => Promise<void>
@@ -124,9 +124,9 @@ interface ConnectorStore {
   reset: () => void
 }
 
-function schemaColumnsFromUiTrigger(raw: unknown): SchemaColumn[] {
+function TemplateColumnsFromUiTrigger(raw: unknown): TemplateColumn[] {
   if (!Array.isArray(raw)) return []
-  const mapped = raw.map((item): SchemaColumn => {
+  const mapped = raw.map((item): TemplateColumn => {
     if (!isRecord(item)) return { name: "", original: "", type: "STRING", mode: "NULLABLE" }
     const fieldName = typeof item.field_name === "string" ? item.field_name : typeof item.name === "string" ? item.name : ""
     return {
@@ -137,7 +137,7 @@ function schemaColumnsFromUiTrigger(raw: unknown): SchemaColumn[] {
       description: typeof item.description === "string" ? item.description : undefined,
     }
   })
-  return dedupeSchemaColumnsByFieldName(mapped)
+  return dedupeTemplateColumnsByFieldName(mapped)
 }
 
 const initialState = {
@@ -149,7 +149,7 @@ const initialState = {
   investigationError: null,
   completedNodes: [] as string[],
   selectedFields: [] as string[],
-  schemaProposal: null,
+  templateProposal: null,
   isProposing: false,
   proposalError: null,
   messages: [] as ChatMessage[],
@@ -171,7 +171,7 @@ export const useConnectorStore = create<ConnectorStore>()((set, get) => ({
       completedNodes: [],
       fields: [],
       investigationError: null,
-      schemaProposal: null,
+      templateProposal: null,
       messages: [],
       uiTrigger: null,
       abortController: null,
@@ -190,11 +190,11 @@ export const useConnectorStore = create<ConnectorStore>()((set, get) => ({
 
   setSelectedFields: (fields) => set({ selectedFields: dedupeFieldIdList(fields) }),
 
-  setSchemaProposal: (proposal) =>
+  setTemplateProposal: (proposal) =>
     set({
-      schemaProposal: {
+      templateProposal: {
         ...proposal,
-        columns: dedupeSchemaColumnsByFieldName(proposal.columns),
+        columns: dedupeTemplateColumnsByFieldName(proposal.columns),
       },
       isProposing: false,
     }),
@@ -334,10 +334,10 @@ export const useConnectorStore = create<ConnectorStore>()((set, get) => ({
                 }
               : null
             const base = { abortController: null as AbortController | null, uiTrigger, isProposing: false }
-            if (isRecord(utRaw) && utRaw.component === "SchemaApproval" && isRecord(utRaw.data) && typeof utRaw.data.ddl === "string") {
-              const columns = schemaColumnsFromUiTrigger(utRaw.data.columns ?? [])
-              const tableName = typeof utRaw.data.tableName === "string" && utRaw.data.tableName.trim() ? utRaw.data.tableName.trim() : "Pending Schema"
-              return { ...base, schemaProposal: { tableName, columns, ddl: utRaw.data.ddl } }
+            if (isRecord(utRaw) && utRaw.component === "TemplateApproval" && isRecord(utRaw.data) && typeof utRaw.data.ddl === "string") {
+              const columns = TemplateColumnsFromUiTrigger(utRaw.data.columns ?? [])
+              const tableName = typeof utRaw.data.tableName === "string" && utRaw.data.tableName.trim() ? utRaw.data.tableName.trim() : "Pending Template"
+              return { ...base, templateProposal: { tableName, columns, ddl: utRaw.data.ddl } }
             }
             return base
           })
@@ -380,7 +380,7 @@ export const useConnectorStore = create<ConnectorStore>()((set, get) => ({
         set({ isProposing: false, abortController: null })
         return
       }
-      set({ proposalError: e instanceof Error ? e.message : "Failed to generate schema", isProposing: false, abortController: null })
+      set({ proposalError: e instanceof Error ? e.message : "Failed to generate Template", isProposing: false, abortController: null })
     } finally {
       set((s) => s.abortController === ac ? { isProposing: false, abortController: null } : {})
     }

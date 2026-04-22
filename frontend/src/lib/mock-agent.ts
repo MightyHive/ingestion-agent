@@ -99,7 +99,7 @@ const BQ_TYPE: Record<string, string> = {
   BOOLEAN: "BOOL",
 }
 
-export function generateMockSchema(connectorId: string, selectedIds: string[]) {
+export function generateMockTemplate(connectorId: string, selectedIds: string[]) {
   const allFields = MOCK_FIELDS[connectorId] ?? []
   const selected  = allFields.filter(f => selectedIds.includes(f.id))
 
@@ -157,7 +157,7 @@ export async function* mockSubmitInputStream(
   selectedIds: string[]
 ): AsyncGenerator<string> {
   const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
-  const proposal = generateMockSchema(connectorId, selectedIds)
+  const proposal = generateMockTemplate(connectorId, selectedIds)
 
   yield `data: ${JSON.stringify({ type: "connection", status: "connected" })}\n\n`
   await delay(300)
@@ -170,9 +170,9 @@ export async function* mockSubmitInputStream(
 
   yield `data: ${JSON.stringify({
     type: "final",
-    response_text: "Schema proposal is ready to review.",
+    response_text: "Template proposal is ready to review.",
     ui_trigger: {
-      component: "SchemaApproval",
+      component: "TemplateApproval",
       message: "Review the proposed DDL.",
       data: {
         ddl: proposal.ddl,
