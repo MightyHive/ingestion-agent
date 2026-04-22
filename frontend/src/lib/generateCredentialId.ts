@@ -1,6 +1,6 @@
 
 export function generateCredentialId(platform: string, brand: string, market: string): string {
-  const shortId = Math.random().toString(36).substring(2, 8);
+  const shortId = String(Math.floor(1000000 + Math.random() * 9000000));
   
   const p = platform.toLowerCase().trim();
   const b = brand.toLowerCase().trim().replace(/\s+/g, '_');

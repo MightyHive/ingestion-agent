@@ -1,4 +1,5 @@
 import { create } from "zustand"
+import {persist} from "zustand/middleware"
 import type { Column } from "@/components/connectors/ColumnSelector"
 import { buildBigQueryCreateDdl } from "@/lib/bigquery-ddl"
 import { columnsFromUiTriggerData } from "@/lib/ui-trigger-fields"
@@ -118,9 +119,6 @@ interface ConnectorStore {
   setProposalError: (error: string | null) => void
   startInvestigation: (sessionId: string, message: string) => Promise<void>
   submitUserInput: (sessionId: string, userInput: unknown) => Promise<void>
-  updateSchemaColumnName: (sourceOriginal: string, name: string) => void
-  updateSchemaColumnType: (sourceOriginal: string, type: string) => void
-  updateSchemaColumnMode: (sourceOriginal: string, mode: "NULLABLE" | "REQUIRED") => void
   abortStream: () => void
   setScheduleConfig: (config: Partial<ScheduleConfig>) => void
   reset: () => void
@@ -387,58 +385,6 @@ export const useConnectorStore = create<ConnectorStore>()((set, get) => ({
     }
   },
 
-  updateSchemaColumnName: (sourceOriginal, name) => {
-    set((state) => {
-      const p = state.schemaProposal
-      if (!p) return {}
-      const trimmed = name.trim()
-      const columns = p.columns.map((c) =>
-        c.original === sourceOriginal ? { ...c, name: trimmed || c.name } : c
-      )
-      return {
-        schemaProposal: {
-          ...p,
-          columns,
-          ddl: buildBigQueryCreateDdl(p.tableName, columns),
-        },
-      }
-    })
-  },
-
-  updateSchemaColumnType: (sourceOriginal, type) => {
-    set((state) => {
-      const p = state.schemaProposal
-      if (!p) return {}
-      const nextType = type.trim() || "STRING"
-      const columns = p.columns.map((c) =>
-        c.original === sourceOriginal ? { ...c, type: nextType } : c
-      )
-      return {
-        schemaProposal: {
-          ...p,
-          columns,
-          ddl: buildBigQueryCreateDdl(p.tableName, columns),
-        },
-      }
-    })
-  },
-
-  updateSchemaColumnMode: (sourceOriginal, mode) => {
-    set((state) => {
-      const p = state.schemaProposal
-      if (!p) return {}
-      const columns = p.columns.map((c) =>
-        c.original === sourceOriginal ? { ...c, mode } : c
-      )
-      return {
-        schemaProposal: {
-          ...p,
-          columns,
-          ddl: buildBigQueryCreateDdl(p.tableName, columns),
-        },
-      }
-    })
-  },
 
   reset: () => {
     const ac = get().abortController

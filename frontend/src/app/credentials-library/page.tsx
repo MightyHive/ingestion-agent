@@ -8,24 +8,13 @@ import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog"
 import { generateCredentialId } from "@/lib/generateCredentialId"
 import {cn} from "@/lib/utils"
+import { useCredentialStore } from "@/lib/stores/credentialStore"
 
 export default function CredentialsPage() {
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null) // Para saber si estamos editando
-  
-  // 1. Inicializamos la lista con tu credencial por defecto
-  const [credentials, setCredentials] = useState([
-    {
-      name: "Meta France Cadillac",
-      id: "meta_cadillac_france_10923412",
-      platform: "META",
-      market: "France (EMEA)",
-      brand: "Cadillac",
-      status: "Healthy",
-      owner: "J. Smith",
-      token: "existing-token-123"
-    }
-  ])
+  const { credentials, addCredential, updateCredential, deleteCredential} = useCredentialStore()
+
 
   // 2. Estado para capturar los datos del formulario
   const [formData, setFormData] = useState({
@@ -58,40 +47,39 @@ const openEditModal = (conn: any) => {
 
     // Guardar (Crear o Editar)
     const handleSave = () => {
-      if (editingId) {
-        // Editar
-        setCredentials(credentials.map(c => 
-          c.id === editingId ? { ...formData, id: editingId, status: "Healthy", owner: c.owner } : c
-        ))
-      } else {
-        // Crear
-        const id = generateCredentialId(formData.platform, formData.brand, formData.market)
-        const entry = {
-          ...formData,
-          id: id,
-          status: "Healthy",
-          owner: "You (Admin)"
-        }
-        setCredentials([entry, ...credentials])
+      const entry = {
+        ...formData,
+        id: editingId || generateCredentialId(formData.platform, formData.brand, formData.market),
+        status: "Healthy",
+        owner: "You (Admin)"
       }
+      if (editingId) {
+        updateCredential(editingId, entry)}
+        else { addCredential(entry)}
       setIsModalOpen(false)
     }
 
     // Eliminar
     const handleDelete = (id: string) => {
       if (confirm("Are you sure you want to delete this connection?")) {
-        setCredentials(credentials.filter(c => c.id !== id))
+        deleteCredential(id)
       }
     }
-
-    // Simular Test de API
+    // Simulación TEST API
     const handleTest = (id: string) => {
-      // 1. Cambiamos estado a "Testing..."
-      setCredentials(prev => prev.map(c => c.id === id ? { ...c, status: "Testing..." } : c))
-
-      // 2. Simulamos delay de red (2 segundos)
+      // 1. Buscamos la credencial actual en el Store
+      const currentCred = credentials.find(c => c.id === id)
+      if (!currentCred) return
+    
+      // 2. Cambiamos estado a "Testing..." usando la función del Store
+      updateCredential(id, { ...currentCred, status: "Testing..." })
+    
+      // 3. Simulamos delay de red (2 segundos)
       setTimeout(() => {
-        setCredentials(prev => prev.map(c => c.id === id ? { ...c, status: "Healthy" } : c))
+        const updatedCred = credentials.find(c => c.id === id)
+        if (updatedCred) {
+          updateCredential(id, { ...updatedCred, status: "Healthy" })
+        }
       }, 2000)
     }
 
