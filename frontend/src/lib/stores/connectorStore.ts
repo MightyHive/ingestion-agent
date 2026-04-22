@@ -1,6 +1,6 @@
 import { create } from "zustand"
 import {persist} from "zustand/middleware"
-import type { Column } from "@/components/connectors/ColumnSelector"
+import type { FieldRow } from "@/lib/platforms/types"
 import { buildBigQueryCreateDdl } from "@/lib/bigquery-ddl"
 import { columnsFromUiTriggerData } from "@/lib/ui-trigger-fields"
 import { mockAgentStream, mockSubmitInputStream } from "@/lib/mock-agent"
@@ -59,7 +59,7 @@ function dedupeByStableKey<T>(items: readonly T[], keyOf: (item: T) => string): 
   return out
 }
 
-function dedupeColumnsByDomainId(columns: Column[]): Column[] {
+function dedupeColumnsByDomainId(columns: FieldRow[]): FieldRow[] {
   return dedupeByStableKey(columns, (c) => c.id)
 }
 
@@ -92,7 +92,7 @@ interface ConnectorStore {
   connectorId: string | null
   connectorName: string | null
   sessionId: string | null
-  fields: Column[]
+  fields: FieldRow[]
   isInvestigating: boolean
   investigationError: string | null
   completedNodes: string[]
@@ -111,7 +111,7 @@ interface ConnectorStore {
   setConnector: (id: string, name: string, sessionId: string) => void
   setInvestigating: (value: boolean) => void
   addCompletedNode: (node: string) => void
-  setFields: (fields: Column[]) => void
+  setFields: (fields: FieldRow[]) => void
   setInvestigationError: (error: string | null) => void
   setSelectedFields: (fields: string[]) => void
   setSchemaProposal: (proposal: SchemaProposal) => void
@@ -144,7 +144,7 @@ const initialState = {
   connectorId: null,
   connectorName: null,
   sessionId: null,
-  fields: [] as Column[],
+  fields: [] as FieldRow[],
   isInvestigating: false,
   investigationError: null,
   completedNodes: [] as string[],
@@ -250,7 +250,8 @@ export const useConnectorStore = create<ConnectorStore>()((set, get) => ({
               : null
             let fields = state.fields
             if (isRecord(utRaw) && utRaw.component === "ColumnSelector" && isRecord(utRaw.data)) {
-              const mapped = columnsFromUiTriggerData(utRaw.data)
+              const platformId = state.connectorId ?? "meta"
+              const mapped = columnsFromUiTriggerData(utRaw.data, platformId)
               if (mapped.length) fields = dedupeColumnsByDomainId(mapped)
             }
             return {
