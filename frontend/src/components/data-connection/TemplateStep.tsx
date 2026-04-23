@@ -33,7 +33,7 @@ export default function TemplateStep({data, onUpdate}: any) {
     completedNodes,
   } = store
   const [copied, setCopied] = useState(false)
-  const [template, settemplate] = useState(null)
+  const [saved, setSaved] = useState(false)
 
   useEffect(() => {
     // Solo disparamos la simulación si tenemos los datos y no hay nada en proceso
@@ -65,11 +65,7 @@ export default function TemplateStep({data, onUpdate}: any) {
         ddl:       templateProposal.ddl,
       })
     }
-    router.push("/scheduler")
-  }
-
-  function handleReject() {
-    router.push("/selectors")
+    setSaved(true)
   }
 
   async function copyDDL() {
@@ -218,22 +214,34 @@ export default function TemplateStep({data, onUpdate}: any) {
               </p>
             </div>
 
-            <div className="flex flex-col gap-2">
-              <button
-                onClick={handleApprove}
-                className="w-full py-2.5 px-4 bg-primary text-white rounded-xl font-semibold text-sm hover:bg-primary/90 transition-colors flex items-center justify-center gap-2"
-              >
-                <span className="material-symbols-outlined text-base">Save</span>
-                Save template
-              </button>
-              <button
-                onClick={handleReject}
-                className="w-full py-2.5 px-4 bg-transparent border border-border text-on-surface-variant rounded-xl font-semibold text-sm hover:bg-muted/50 transition-colors flex items-center justify-center gap-2"
-              >
-                <span className="material-symbols-outlined text-base">arrow_back</span>
-                Go to Selectors
-              </button>
-            </div>
+            {saved ? (
+              <div className="flex flex-col gap-2">
+                <div className="w-full py-3 px-4 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center gap-2 text-emerald-800 text-sm font-semibold">
+                  <span className="material-symbols-outlined text-base">check_circle</span>
+                  Template saved
+                </div>
+                <p className="text-xs text-on-surface-variant text-center">
+                  <code className="font-mono">{templateProposal.tableName}</code> is ready to use.
+                </p>
+                <button
+                  onClick={() => router.push("/data-export")}
+                  className="w-full py-2.5 px-4 bg-primary text-white rounded-xl font-semibold text-sm hover:bg-primary/90 transition-colors flex items-center justify-center gap-2"
+                >
+                  <span className="material-symbols-outlined text-base">upload</span>
+                  Go to Data Export
+                </button>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                <button
+                  onClick={handleApprove}
+                  className="w-full py-2.5 px-4 bg-primary text-white rounded-xl font-semibold text-sm hover:bg-primary/90 transition-colors flex items-center justify-center gap-2"
+                >
+                  <span className="material-symbols-outlined text-base">save</span>
+                  Save template
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

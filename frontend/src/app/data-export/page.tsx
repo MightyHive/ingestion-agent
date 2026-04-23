@@ -82,21 +82,32 @@ export default function DataExportPage() {
         {renderStep()}
       </div>
 
-      <div className="flex justify-between mt-8">
-        <Button variant="outline" onClick={() => setStep(step - 1)} disabled={step === 1}>
-          Back
-        </Button>
-        <Button
-          className="bg-[#5c27fe]"
-          onClick={() => setStep(step + 1)}
-          disabled={
-            step === 3 ||
-            (step === 1 && !step1Completed) ||
-            (step === 2 && !step2Completed)
-          }
-        >
-          Next
-        </Button>
+      <div
+        className={`mt-8 flex ${
+          step > 1 && step < 3
+            ? "justify-between"
+            : step === 1
+              ? "justify-end"
+              : "justify-start"
+        }`}
+      >
+        {step > 1 && (
+          <Button variant="outline" onClick={() => setStep(step - 1)}>
+            Back
+          </Button>
+        )}
+        {step < 3 && (
+          <Button
+            className="bg-[#5c27fe]"
+            onClick={() => setStep(step + 1)}
+            disabled={
+              (step === 1 && !step1Completed) ||
+              (step === 2 && !step2Completed)
+            }
+          >
+            Next
+          </Button>
+        )}
       </div>
     </div>
   )
