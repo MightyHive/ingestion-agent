@@ -1,7 +1,5 @@
 import { create } from "zustand"
-import {persist} from "zustand/middleware"
 import type { FieldRow } from "@/lib/platforms/types"
-import { buildBigQueryCreateDdl } from "@/lib/bigquery-ddl"
 import { columnsFromUiTriggerData } from "@/lib/ui-trigger-fields"
 import { mockAgentStream, mockSubmitInputStream } from "@/lib/mock-agent"
 
@@ -81,7 +79,7 @@ function feedSseBuffer(buffer: string, chunk: string): { buffer: string; events:
     if (!line) continue
     try {
       events.push(JSON.parse(line))
-    } catch { }
+    } catch { /* malformed SSE chunk — skip */ }
   }
   return { buffer: rest, events }
 }

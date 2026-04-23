@@ -126,8 +126,8 @@ const openEditModal = (conn: any) => {
                     <option value="TIKTOK">TikTok</option>
                     <option value="YOUTUBE">YouTube</option>
                     <option value="CM360">CM360</option>
-                    <option value="GOOGLE ADS">Google</option>
-                    <option value="DV360">Snapchat</option>
+                    <option value="GOOGLE_ADS">Google Ads</option>
+                    <option value="DV360">DV360</option>
                   </select>
                 </div>
                 <div className="space-y-2">
