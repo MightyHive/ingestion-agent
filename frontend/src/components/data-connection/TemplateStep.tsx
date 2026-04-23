@@ -4,6 +4,7 @@ import {useEffect, useState} from "react"
 import { useRouter } from "next/navigation"
 import { AgentProgressPanel } from "@/components/agents/AgentProgressPanel"
 import { useConnectorStore } from "@/lib/stores/connectorStore"
+import { useTemplateStore } from "@/lib/stores/templateStore"
 import { generateMockTemplate } from "@/lib/mock-agent"
 
 function typeColor(type: string): string {
@@ -17,10 +18,12 @@ function typeColor(type: string): string {
 }
 
 export default function TemplateStep({data, onUpdate}: any) {
-  const platform = data.step1?.platform; 
-  const columns = data.step2?.columns || [];
-  const router   = useRouter()
-  const store    = useConnectorStore()
+  const platform       = data.step1?.platform
+  const columns        = data.step2?.columns || []
+  const reportingLevel = data.step2?.reportingLevel ?? null
+  const router         = useRouter()
+  const store          = useConnectorStore()
+  const { addTemplate } = useTemplateStore()
   const {
     templateProposal,
     isProposing,
@@ -43,7 +46,7 @@ export default function TemplateStep({data, onUpdate}: any) {
         // Simulamos el trabajo del arquitecto
         await new Promise(r => setTimeout(r, 1500));
         
-        const proposal = generateMockTemplate(platform, columns);
+        const proposal = generateMockTemplate(platform, columns, reportingLevel);
         store.setTemplateProposal(proposal);
         store.setProposing(false);
       };
@@ -53,7 +56,15 @@ export default function TemplateStep({data, onUpdate}: any) {
   }, [platform, columns.length, templateProposal, isProposing]); // Se ejecuta si algo de esto cambia
 
   function handleApprove() {
-    // TODO: call backend to approve and continue to scheduler
+    if (templateProposal) {
+      addTemplate({
+        tableName: templateProposal.tableName,
+        platform:  platform ?? "",
+        endpoint:  reportingLevel ?? "all",
+        columns:   templateProposal.columns,
+        ddl:       templateProposal.ddl,
+      })
+    }
     router.push("/scheduler")
   }
 
@@ -143,11 +154,10 @@ export default function TemplateStep({data, onUpdate}: any) {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-border">
-                      <th className="text-left py-2 px-2 text-xs font-semibold text-on-surface-variant uppercase tracking-wider">Field</th>
-                      <th className="text-left py-2 px-2 text-xs font-semibold text-on-surface-variant uppercase tracking-wider">Type</th>
-                      <th className="text-left py-2 px-2 text-xs font-semibold text-on-surface-variant uppercase tracking-wider">Mode</th>
-                      <th className="text-left py-2 px-2 text-xs font-semibold text-on-surface-variant uppercase tracking-wider">Description</th>
-                      <th className="text-left py-2 px-2 text-xs font-semibold text-on-surface-variant uppercase tracking-wider">Original</th>
+                      <th className="text-left py-2 px-2 text-xs font-semibold text-on-surface-variant uppercase tracking-wider w-24">Field</th>
+                      <th className="text-left py-2 px-2 text-xs font-semibold text-on-surface-variant uppercase tracking-wider w-24">Type</th>
+                      <th className="text-left py-2 px-2 text-xs font-semibold text-on-surface-variant uppercase tracking-wider w-24">Mode</th>
+                      <th className="text-left py-2 px-2 text-xs font-semibold text-on-surface-variant uppercase tracking-wider w-48">Description</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -156,22 +166,19 @@ export default function TemplateStep({data, onUpdate}: any) {
                         key={col.original}
                         className="border-b border-border/50 hover:bg-muted/30 transition-colors"
                       >
-                        <td className="py-2 px-2">
+                        <td className="py-2 px-2 w-48">
                           <code className="text-xs font-mono text-on-surface-variant">{col.name}</code>
                         </td>
-                        <td className="py-2 px-2">
-                        <code className="text-xs font-mono text-on-surface-variant">{col.type}</code>
+                        <td className="py-2 px-2 w-24">
+                          <code className="text-xs font-mono text-on-surface-variant">{col.type}</code>
                         </td>
-                        <td className="py-2 px-2">
+                        <td className="py-2 px-2 w-24">
                           <code className="text-xs font-mono text-on-surface-variant">{col.mode}</code>
                         </td>
-                        <td className="py-2 px-2 max-w-[220px]">
-                          <span className="text-xs text-on-surface-variant line-clamp-3">
+                        <td className="py-2 px-2">
+                          <span className="text-xs text-on-surface-variant">
                             {col.description?.trim() ? col.description.trim() : "—"}
                           </span>
-                        </td>
-                        <td className="py-2 px-2">
-                          <code className="text-xs font-mono text-on-surface-variant">{col.original}</code>
                         </td>
                       </tr>
                     ))}
