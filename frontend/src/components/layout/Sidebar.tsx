@@ -5,9 +5,10 @@ import { usePathname } from "next/navigation"
 
 const navItems = [
   { href: "/",           icon: "dashboard",      label: "Dashboard" },
-  { href: "/connectors", icon: "hub",             label: "Connectors" },
-  { href: "/selectors",  icon: "ads_click",       label: "Selectors" },
-  { href: "/schema",     icon: "schema",          label: "Schema" },
+  { href: "/credentials-library", icon: "key", label: "Credentials Library"},
+  { href: "/data-connection", icon: "ads_click",             label: "Data Connection" },
+  { href: "/data-export",  icon: "system_update_alt",       label: "Data Export" },
+  { href: "/export-planner",     icon: "schedule_send",          label: "Export Planner" },
   { href: "/scheduler",  icon: "calendar_today",  label: "Scheduler" },
 ]
 

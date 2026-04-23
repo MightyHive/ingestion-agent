@@ -1,30 +1,10 @@
 "use client"
 
+import {useEffect, useState} from "react"
 import { useRouter } from "next/navigation"
-import { useState } from "react"
 import { AgentProgressPanel } from "@/components/agents/AgentProgressPanel"
 import { useConnectorStore } from "@/lib/stores/connectorStore"
-
-const BIGQUERY_TYPE_OPTIONS: readonly string[] = [
-  "STRING",
-  "INT64",
-  "FLOAT64",
-  "BOOL",
-  "DATE",
-  "TIMESTAMP",
-  "BYTES",
-  "NUMERIC",
-  "BIGNUMERIC",
-]
-
-function typeSelectOptions(current: string): string[] {
-  const c = current.trim()
-  const set = new Set<string>(BIGQUERY_TYPE_OPTIONS)
-  if (c && !set.has(c)) {
-    return [...BIGQUERY_TYPE_OPTIONS, c]
-  }
-  return [...BIGQUERY_TYPE_OPTIONS]
-}
+import { generateMockTemplate } from "@/lib/mock-agent"
 
 function typeColor(type: string): string {
   if (type.includes("FLOAT") || type === "NUMERIC" || type === "BIGNUMERIC")
@@ -36,21 +16,41 @@ function typeColor(type: string): string {
   return "bg-muted text-on-surface-variant"
 }
 
-export default function SchemaPage() {
+export default function TemplateStep({data, onUpdate}: any) {
+  const platform = data.step1?.platform; 
+  const columns = data.step2?.columns || [];
   const router   = useRouter()
   const store    = useConnectorStore()
   const {
-    schemaProposal,
+    templateProposal,
     isProposing,
     proposalError,
     connectorName,
     selectedFields,
     completedNodes,
-    updateSchemaColumnName,
-    updateSchemaColumnType,
-    updateSchemaColumnMode,
   } = store
   const [copied, setCopied] = useState(false)
+  const [template, settemplate] = useState(null)
+
+  useEffect(() => {
+    // Solo disparamos la simulación si tenemos los datos y no hay nada en proceso
+    if (platform && columns.length > 0 && !templateProposal && !isProposing) {
+      
+      const simulateAgent = async () => {
+        store.setProposing(true);
+        store.setSelectedFields(columns);
+        
+        // Simulamos el trabajo del arquitecto
+        await new Promise(r => setTimeout(r, 1500));
+        
+        const proposal = generateMockTemplate(platform, columns);
+        store.setTemplateProposal(proposal);
+        store.setProposing(false);
+      };
+  
+      simulateAgent();
+    }
+  }, [platform, columns.length, templateProposal, isProposing]); // Se ejecuta si algo de esto cambia
 
   function handleApprove() {
     // TODO: call backend to approve and continue to scheduler
@@ -62,17 +62,17 @@ export default function SchemaPage() {
   }
 
   async function copyDDL() {
-    if (!schemaProposal?.ddl) return
-    await navigator.clipboard.writeText(schemaProposal.ddl)
+    if (!templateProposal?.ddl) return
+    await navigator.clipboard.writeText(templateProposal.ddl)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
 
-  if (!isProposing && !schemaProposal && !proposalError) {
+  if (!isProposing && !templateProposal && !proposalError) {
     return (
       <div className="flex flex-col items-center justify-center gap-4 py-20">
-        <span className="material-symbols-outlined text-4xl text-on-surface-variant">schema</span>
-        <p className="text-sm text-on-surface-variant">There is no schema generated.</p>
+        <span className="material-symbols-outlined text-4xl text-on-surface-variant">template</span>
+        <p className="text-sm text-on-surface-variant">There is no template generated.</p>
         <button onClick={() => router.push("/selectors")} className="text-sm font-semibold text-primary hover:underline">
           Go to Selectors
         </button>
@@ -83,7 +83,7 @@ export default function SchemaPage() {
   return (
     <div className="space-y-6 max-w-[1200px]">
       <div>
-        <h1 className="text-2xl font-semibold text-on-surface">Schema</h1>
+        <h1 className="text-2xl font-semibold text-on-surface">Template</h1>
         <p className="text-sm text-on-surface-variant mt-0.5">
           The Data Architect proposes the following structure for your data.
         </p>
@@ -93,7 +93,7 @@ export default function SchemaPage() {
         <div className="bg-card rounded-2xl border border-border p-6">
           <AgentProgressPanel completedNodes={completedNodes} active={isProposing} />
           <p className="text-xs text-on-surface-variant mt-4">
-            Data Architect is designing the schema. This may take a few seconds.
+            Data Architect is designing the template. This may take a few seconds.
           </p>
         </div>
       )}
@@ -103,7 +103,7 @@ export default function SchemaPage() {
         <div className="bg-card rounded-2xl border border-red-200 p-6 flex items-center gap-3 text-red-700">
           <span className="material-symbols-outlined">error</span>
           <div>
-            <p className="font-semibold text-sm">Error while generating the schema</p>
+            <p className="font-semibold text-sm">Error while generating the template</p>
             <p className="text-xs mt-0.5">{proposalError}</p>
           </div>
           <button onClick={() => router.push("/selectors")} className="ml-auto text-xs font-semibold text-primary hover:underline">
@@ -112,7 +112,7 @@ export default function SchemaPage() {
         </div>
       )}
 
-      {schemaProposal && (
+      {templateProposal && (
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6">
 
           <div className="flex flex-col gap-4">
@@ -120,20 +120,20 @@ export default function SchemaPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-1">
-                    Table proposal
+                    Template proposal
                   </p>
                   <div className="flex items-center gap-2">
                     <span className="material-symbols-outlined text-on-surface-variant text-base">table_chart</span>
                     <code className="text-sm font-mono font-semibold text-primary">
-                      {schemaProposal.tableName}
+                      {templateProposal.tableName}
                     </code>
                   </div>
                   <p className="text-xs text-on-surface-variant mt-1">
-                    {schemaProposal.columns.length} columns · BigQuery Standard SQL
+                    {templateProposal.columns.length} columns · BigQuery Standard SQL
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-medium">
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-ermerald-50 text-emerald-700 border border-emerald-200 font-medium">
                     Standard
                   </span>
                 </div>
@@ -151,55 +151,19 @@ export default function SchemaPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {schemaProposal.columns.map((col) => (
+                    {templateProposal.columns.map((col) => (
                       <tr
                         key={col.original}
                         className="border-b border-border/50 hover:bg-muted/30 transition-colors"
                       >
                         <td className="py-2 px-2">
-                          <input
-                            type="text"
-                            value={col.name}
-                            onChange={(e) =>
-                              updateSchemaColumnName(col.original, e.target.value)
-                            }
-                            className="w-full min-w-[120px] text-xs font-mono text-primary bg-background border border-border rounded px-2 py-1"
-                            aria-label={`BigQuery column name for ${col.original}`}
-                          />
+                          <code className="text-xs font-mono text-on-surface-variant">{col.name}</code>
                         </td>
                         <td className="py-2 px-2">
-                          <select
-                            value={col.type}
-                            onChange={(e) =>
-                              updateSchemaColumnType(col.original, e.target.value)
-                            }
-                            className={`text-xs font-semibold px-2 py-1 rounded border border-border bg-background ${typeColor(col.type)}`}
-                            aria-label={`Type for ${col.original}`}
-                          >
-                            {typeSelectOptions(col.type).map((t) => (
-                              <option key={t} value={t}>
-                                {t}
-                              </option>
-                            ))}
-                          </select>
+                        <code className="text-xs font-mono text-on-surface-variant">{col.type}</code>
                         </td>
                         <td className="py-2 px-2">
-                          <select
-                            value={col.mode}
-                            onChange={(e) =>
-                              updateSchemaColumnMode(
-                                col.original,
-                                e.target.value === "REQUIRED" ? "REQUIRED" : "NULLABLE"
-                              )
-                            }
-                            className={`text-xs font-medium border border-border rounded bg-background px-2 py-1 ${
-                              col.mode === "REQUIRED" ? "text-on-surface" : "text-on-surface-variant"
-                            }`}
-                            aria-label={`Mode for ${col.original}`}
-                          >
-                            <option value="NULLABLE">NULLABLE</option>
-                            <option value="REQUIRED">REQUIRED</option>
-                          </select>
+                          <code className="text-xs font-mono text-on-surface-variant">{col.mode}</code>
                         </td>
                         <td className="py-2 px-2 max-w-[220px]">
                           <span className="text-xs text-on-surface-variant line-clamp-3">
@@ -216,31 +180,7 @@ export default function SchemaPage() {
               </div>
             </div>
 
-            <details className="bg-card rounded-2xl border border-border overflow-hidden group">
-              <summary className="cursor-pointer list-none flex items-center justify-between gap-3 px-5 py-3 border-b border-border bg-muted/30 [&::-webkit-details-marker]:hidden">
-                <span className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider">
-                  View SQL DDL Preview
-                </span>
-                <span className="material-symbols-outlined text-on-surface-variant text-base transition-transform group-open:rotate-180 shrink-0">
-                  expand_more
-                </span>
-              </summary>
-              <div className="flex justify-end px-5 pt-3 pb-0">
-                <button
-                  type="button"
-                  onClick={copyDDL}
-                  className="flex items-center gap-1 text-xs font-semibold text-primary hover:underline"
-                >
-                  <span className="material-symbols-outlined text-sm">
-                    {copied ? "check" : "content_copy"}
-                  </span>
-                  {copied ? "Copied" : "Copy"}
-                </button>
-              </div>
-              <pre className="p-5 pt-2 text-xs font-mono text-on-surface overflow-x-auto leading-relaxed bg-slate-950 text-slate-100">
-                {schemaProposal.ddl}
-              </pre>
-            </details>
+            
           </div>
 
           <div className="flex flex-col gap-4">
@@ -255,7 +195,7 @@ export default function SchemaPage() {
               </div>
               <div>
                 <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-1">Table</p>
-                <code className="text-xs font-mono text-primary">{schemaProposal.tableName}</code>
+                <code className="text-xs font-mono text-primary">{templateProposal.tableName}</code>
               </div>
             </div>
 
@@ -265,8 +205,8 @@ export default function SchemaPage() {
                 <p className="text-xs font-semibold text-on-surface">Automation Insight</p>
               </div>
               <p className="text-xs text-on-surface-variant leading-relaxed">
-                The Data Architect Agent proposes {schemaProposal.columns.filter(c => c.mode === "REQUIRED").length} required fields
-                and {schemaProposal.columns.filter(c => c.mode === "NULLABLE").length} as optionals.
+                The Data Architect Agent proposes {templateProposal.columns.filter(c => c.mode === "REQUIRED").length} required fields
+                and {templateProposal.columns.filter(c => c.mode === "NULLABLE").length} as optionals.
                 The types were adapted to the BigQuery standard.
               </p>
             </div>
@@ -276,8 +216,8 @@ export default function SchemaPage() {
                 onClick={handleApprove}
                 className="w-full py-2.5 px-4 bg-primary text-white rounded-xl font-semibold text-sm hover:bg-primary/90 transition-colors flex items-center justify-center gap-2"
               >
-                <span className="material-symbols-outlined text-base">check_circle</span>
-                Approve schema
+                <span className="material-symbols-outlined text-base">Save</span>
+                Save template
               </button>
               <button
                 onClick={handleReject}
