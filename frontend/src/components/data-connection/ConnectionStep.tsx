@@ -28,7 +28,7 @@ export default function ConnectionStep({ data, onUpdate }: any) {
   const handleSelect = (platformId: string) => {
     setSelected(platformId); // Actualiza la UI local (el bordecito azul)
     onUpdate({ platform: platformId});
-    const sessionId = "mock-session-123" 
+    const sessionId = getConnectorSessionId(platformId)
     store.setConnector(platformId, CONNECTORS.find((c) => c.id === platformId)?.name || "", sessionId)
  
     void store.startInvestigation(sessionId, "Mock query");

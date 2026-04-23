@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import type { FieldRow, ReportEndpoint } from "@/lib/platforms/types"
 import { cn } from "@/lib/utils"
 
-/** @deprecated Prefer importing `FieldRow` from `@/lib/platform/types`. */
+/** @deprecated Prefer importing `FieldRow` from `@/lib/platforms/types`. */
 export type Column = FieldRow
 
 interface ColumnSelectorProps {
@@ -43,7 +43,7 @@ function isRowInTab(c: FieldRow, tab: string): boolean {
   if (tab === "all") return true
   if (tab === "metric") return c.kind === "metric"
   if (tab === "dimension") return c.kind === "dimension"
-  return true
+  return c.kind === "metric" || c.endpoint === tab
 }
 
 export default function ColumnSelector({

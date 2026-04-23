@@ -9,6 +9,7 @@ interface Credential {
     brand: string,
     status?:string,
     owner?:string,
+    token?: string,
 }
 
 interface CredentialStore {

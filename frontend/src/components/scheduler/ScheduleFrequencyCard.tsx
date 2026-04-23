@@ -9,14 +9,14 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 
 export default function ScheduleFrequencyCard() {
-  const { scheduleConfig, setScheduleConfig, schemaProposal } = useConnectorStore()
+  const { scheduleConfig, setScheduleConfig, templateProposal } = useConnectorStore()
 
   const config = scheduleConfig || { frequency: "daily", time: "00:00", isReady: false }
 
   return (
     <Card className="w-full max-w-md">
       <CardHeader>
-        <CardTitle>Schedule for: {schemaProposal?.tableName || "raw_table"}</CardTitle>
+        <CardTitle>Schedule for: {templateProposal?.tableName || "raw_table"}</CardTitle>
         <CardDescription>Configure frequency and execution time</CardDescription>
       </CardHeader>
       

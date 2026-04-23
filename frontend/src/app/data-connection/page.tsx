@@ -81,10 +81,10 @@ export default function DataConnectionPage() {
           Step 2
         </div>
         <div
-          onClick={() => setStep(3)}
-          className={`p-2 cursor-pointer transition-colors hover:text-purple-600 ${
-            step === 3 ? "font-bold border-b-2 border-purple-500" : ""
-          }`}
+          onClick={() => step2Completed && setStep(3)}
+          className={`p-2 transition-colors ${
+            step2Completed ? "cursor-pointer hover:text-purple-600" : "cursor-not-allowed opacity-40"
+          } ${step === 3 ? "font-bold border-b-2 border-purple-500" : ""}`}
         >
           Step 3{" "}
         </div>
