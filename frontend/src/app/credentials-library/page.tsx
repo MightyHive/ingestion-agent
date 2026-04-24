@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { generateCredentialId } from "@/lib/generateCredentialId"
 import {cn} from "@/lib/utils"
 import { useCredentialStore } from "@/lib/stores/credentialStore"
+import { HelpCircleIcon, Link } from "lucide-react"
 
 export default function CredentialsPage() {
   const [isModalOpen, setIsModalOpen] = useState(false)
@@ -24,6 +25,15 @@ export default function CredentialsPage() {
     brand: "",
     token: ""
   })
+
+  const TOKEN_DOC_URLS = {
+    META: "https://developers.facebook.com/documentation/facebook-login/guides/access-tokens",
+    TIKTOK: "https://developers.tiktok.com/doc/login-kit-manage-user-access-tokens/",
+    YOUTUBE: "https://developers.google.com/youtube/registering_an_application",
+    CM360: "https://developers.google.com/doubleclick-advertisers/getting_started",
+    DV360: "https://developers.google.com/display-video/api/guides/quickstart/generate-credentials",
+    GOOGLE_ADS: "https://developers.google.com/google-ads/api/docs/get-started/make-first-call"
+  }
 
 // Función para abrir modal en modo "Crear"
 const openCreateModal = () => {
@@ -147,14 +157,16 @@ const openEditModal = (conn: any) => {
                   onChange={(e) => setFormData({...formData, brand: e.target.value})}
                 />
               </div>
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold text-gray-500 uppercase">Access Token</label>
+              <div className="flex flex-col">
+                <label>Access Token</label>
                 <Input 
                   type="password" 
                   placeholder="••••••••••••" 
                   value={formData.token}
                   onChange={(e) => setFormData({...formData, token: e.target.value})}
                 />
+                <span> <a href={TOKEN_DOC_URLS[formData.platform as keyof typeof TOKEN_DOC_URLS]} target="_blank" className="text-[12px] text-blue-500 hover:underline">
+                   Need help? View Documentation</a></span>
               </div>
               
               {/* Preview del ID que se va a generar */}
