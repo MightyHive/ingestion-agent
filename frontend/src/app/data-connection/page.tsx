@@ -61,33 +61,26 @@ export default function DataConnectionPage() {
   const step2Completed =
     formData.step2.columns.length > 0 && formData.step2.reportingLevel !== null
 
+  const STEPS = [
+    { n: 1, label: "Connection", canEnter: true },
+    { n: 2, label: "Selectors", canEnter: true },
+    { n: 3, label: "Template", canEnter: step2Completed },
+  ] as const
+
   return (
     <div className="space-y-8 p-6">
       <div className="flex gap-4 mb-8 items-center">
-        <div
-          onClick={() => setStep(1)}
-          className={`p-2 cursor-pointer transition-colors hover:text-purple-600 ${
-            step === 1 ? "font-bold border-b-2 border-purple-500" : ""
-          }`}
-        >
-          Step 1{" "}
-        </div>
-        <div
-          onClick={() => setStep(2)}
-          className={`p-2 cursor-pointer transition-colors hover:text-purple-600 ${
-            step === 2 ? "font-bold border-b-2 border-purple-500" : ""
-          }`}
-        >
-          Step 2
-        </div>
-        <div
-          onClick={() => step2Completed && setStep(3)}
-          className={`p-2 transition-colors ${
-            step2Completed ? "cursor-pointer hover:text-purple-600" : "cursor-not-allowed opacity-40"
-          } ${step === 3 ? "font-bold border-b-2 border-purple-500" : ""}`}
-        >
-          Step 3{" "}
-        </div>
+        {STEPS.map(({ n, label, canEnter }) => (
+          <div
+            key={n}
+            onClick={() => canEnter && setStep(n)}
+            className={`p-2 text-sm transition-colors ${
+              canEnter ? "cursor-pointer hover:text-purple-600" : "cursor-not-allowed opacity-40"
+            } ${step === n ? "font-bold border-b-2 border-purple-500" : ""}`}
+          >
+            {label}
+          </div>
+        ))}
         <div
           role="progressbar"
           className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden"
@@ -106,22 +99,29 @@ export default function DataConnectionPage() {
         {renderStep()}
       </div>
 
-      <div className="flex justify-between mt-8">
-        <Button
-          variant="outline"
-          onClick={() => setStep(step - 1)}
-          disabled={step === 1}
-        >
-          Back
-        </Button>
-
-        <Button
-          className="bg-[#5c27fe]"
-          onClick={() => setStep(step + 1)}
-          disabled={step === 3 || (step === 2 && !step2Completed)}
-        >
-          Next
-        </Button>
+      <div
+        className={`mt-8 flex ${
+          step > 1 && step < 3
+            ? "justify-between"
+            : step === 1
+              ? "justify-end"
+              : "justify-start"
+        }`}
+      >
+        {step > 1 && (
+          <Button variant="outline" onClick={() => setStep(step - 1)}>
+            Back
+          </Button>
+        )}
+        {step < 3 && (
+          <Button
+            className="bg-[#5c27fe]"
+            onClick={() => setStep(step + 1)}
+            disabled={step === 2 && !step2Completed}
+          >
+            Next
+          </Button>
+        )}
       </div>
     </div>
   )
