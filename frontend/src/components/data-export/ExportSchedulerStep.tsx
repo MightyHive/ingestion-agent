@@ -14,7 +14,7 @@ const FREQUENCIES = [
 
 interface ExportFormData {
   step1: { projectId: string; serviceAccountEmail: string }
-  step2: { templateId: string; credentialId: string; tableName: string }
+  step2: { platform: string; templateId: string; credentialIds: string[]; tableNames: Record<string, string> }
   step3: { frequency: string; time: string; scheduled: boolean }
 }
 
@@ -30,6 +30,12 @@ export default function ExportSchedulerStep({ data, onUpdate }: Props) {
   const [saved, setSaved] = useState(data.step3.scheduled)
 
   const selectedTemplate = templates.find((t) => t.id === data.step2.templateId)
+  const destinationTables = data.step2.credentialIds
+    .map((credentialId) => data.step2.tableNames[credentialId])
+    .filter((tableName): tableName is string => Boolean(tableName?.trim()))
+  const hasAllTableNames =
+    data.step2.credentialIds.length > 0 &&
+    data.step2.credentialIds.every((credentialId) => (data.step2.tableNames[credentialId] ?? "").trim() !== "")
 
   async function handleSchedule() {
     setSaving(true)
@@ -38,8 +44,8 @@ export default function ExportSchedulerStep({ data, onUpdate }: Props) {
       projectId:            data.step1.projectId,
       serviceAccountEmail:  data.step1.serviceAccountEmail,
       templateId:           data.step2.templateId,
-      tableName:            data.step2.tableName,
-      credentialId:         data.step2.credentialId,
+      credentialIds:        data.step2.credentialIds,
+      tableNames:           data.step2.tableNames,
       ddl:                  selectedTemplate?.ddl ?? "",
       schedule: {
         frequency: data.step3.frequency,
@@ -68,8 +74,16 @@ export default function ExportSchedulerStep({ data, onUpdate }: Props) {
           <code className="text-primary font-mono text-xs">{selectedTemplate?.tableName ?? "—"}</code>
         </div>
         <div className="flex gap-2">
-          <span className="text-on-surface-variant w-28 flex-shrink-0">Destination table</span>
-          <code className="text-primary font-mono text-xs">{data.step2.tableName || "—"}</code>
+          <span className="text-on-surface-variant w-28 flex-shrink-0">Destination tables</span>
+          <span className="text-on-surface text-xs">
+            {destinationTables.length > 0 ? `${destinationTables.length} configured` : "—"}
+          </span>
+        </div>
+        <div className="flex gap-2">
+          <span className="text-on-surface-variant w-28 flex-shrink-0">Credentials</span>
+          <span className="text-on-surface text-xs">
+            {data.step2.credentialIds.length > 0 ? `${data.step2.credentialIds.length} selected` : "—"}
+          </span>
         </div>
         <div className="flex gap-2">
           <span className="text-on-surface-variant w-28 flex-shrink-0">GCP Project</span>
@@ -120,8 +134,8 @@ export default function ExportSchedulerStep({ data, onUpdate }: Props) {
           <div>
             <p className="font-semibold">Export scheduled</p>
             <p className="text-xs mt-0.5">
-              Runs <strong>{data.step3.frequency}</strong> at <strong>{data.step3.time} UTC</strong> · Table:{" "}
-              <code className="font-mono">{data.step2.tableName}</code>
+              Runs <strong>{data.step3.frequency}</strong> at <strong>{data.step3.time} UTC</strong> · Tables:{" "}
+              <strong>{destinationTables.length}</strong>
             </p>
           </div>
         </div>
@@ -129,7 +143,7 @@ export default function ExportSchedulerStep({ data, onUpdate }: Props) {
         <button
           type="button"
           onClick={handleSchedule}
-          disabled={saving || !data.step2.tableName || !data.step1.projectId}
+          disabled={saving || !hasAllTableNames || !data.step1.projectId}
           className="self-start px-5 py-2.5 bg-primary text-white rounded-xl font-semibold text-sm hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
         >
           <span className="material-symbols-outlined text-base">

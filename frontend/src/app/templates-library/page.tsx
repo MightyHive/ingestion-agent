@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import { useTemplateStore } from "@/lib/stores/templateStore"
+import Link from "next/link"
 
 type TemplatePlatformId = "all" | "meta" | "tiktok" | "youtube" | "cm360" | "dv360" | "google_ads"
 
@@ -57,9 +58,19 @@ export default function TemplatesLibraryPage() {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-bold">Templates Library</h1>
-          <p className="text-sm text-muted-foreground">Manage reusable templates for data extraction.</p>
+          <p className="text-sm text-muted-foreground">
+            Manage reusable templates for data extraction.
+          </p>
         </div>
+        <Link
+          href="/data-connection"
+          className="inline-flex items-center justify-center bg-[#5c27fe] hover:bg-[#4b1fd1] text-white h-10 px-4 py-2 rounded-md cursor-pointer transition-colors font-medium"
+        >
+          <span className="material-symbols-outlined mr-2 text-[20px]">add</span>
+          Add Template
+        </Link>
       </div>
+
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <StatCard title="TOTAL TEMPLATES" value={templates.length} icon="save" />

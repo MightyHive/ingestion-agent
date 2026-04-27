@@ -6,8 +6,8 @@ export interface ExportJob {
   projectId: string
   serviceAccountEmail: string
   templateId: string
-  tableName: string
-  credentialId: string
+  credentialIds: string[]
+  tableNames: Record<string, string>
   ddl: string
   schedule: { frequency: string; time: string }
   createdAt: string

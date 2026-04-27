@@ -99,6 +99,10 @@ const BQ_TYPE: Record<string, string> = {
   BOOLEAN: "BOOL",
 }
 
+function escapeSqlString(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
+}
+
 export function generateMockTemplate(connectorId: string, selectedIds: string[], reportingLevel?: string | null) {
   const allFields = MOCK_FIELDS[connectorId] ?? []
   const selected  = allFields.filter(f => selectedIds.includes(f.id))
@@ -117,7 +121,7 @@ export function generateMockTemplate(connectorId: string, selectedIds: string[],
   const ddl = [
     `CREATE TABLE \`project.dataset.${tableName}\` (`,
     columns.map(c =>
-      `  ${c.name.padEnd(50)} ${c.type.padEnd(10)} ${c.mode}${c.description ? ` -- ${c.description}` : ""}`
+      `  ${c.name.padEnd(50)} ${c.type.padEnd(10)} ${c.mode}${c.description ? ` OPTIONS(description="${escapeSqlString(c.description)}")` : ""}`
     ).join(",\n"),
     `);`,
   ].join("\n")
