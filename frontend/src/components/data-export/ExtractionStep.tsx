@@ -294,7 +294,7 @@ export default function ExtractionStep({ data, onUpdate, projectId }: Props) {
                       },
                     })}
                   className="font-mono text-sm px-3 py-2 border border-border rounded-lg bg-background outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-                  placeholder="01_region_brand_platform_endpoint"
+                  placeholder="01_bronze_brand_market_platform_endpoint"
                 />
               </div>
             ))}
