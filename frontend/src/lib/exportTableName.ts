@@ -8,5 +8,5 @@ export function buildExportTableName(
   platform: string,
   endpoint: string
 ): string {
-  return `01_${clean(region)}_${clean(brand)}_${clean(platform)}_${clean(endpoint)}`
+  return `01_bronze_${clean(brand)}_${clean(region)}_${clean(platform)}_${clean(endpoint)}`
 }

@@ -1,23 +1,105 @@
 "use client"
 
 import { cn } from "@/lib/utils"
+import { useDestinationStore } from "@/lib/stores/destinationStore"
+import { Button } from "@/components/ui/button"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import type { SavedDestination } from "@/lib/stores/destinationStore"
 
-const MOCK_GCP_PROJECTS = [
-  { id: "mds-prod-421",     name: "MDS Production",     sa: "mds-agent@mds-prod-421.iam.gserviceaccount.com",     region: "us-east1" },
-  { id: "cadillac-gcp-01",  name: "Cadillac Analytics",  sa: "mds-agent@cadillac-gcp-01.iam.gserviceaccount.com",  region: "eu-west1" },
-  { id: "renault-bq-prod",  name: "Renault Analytics",   sa: "mds-agent@renault-bq-prod.iam.gserviceaccount.com",  region: "eu-west1" },
-]
+export type DestinationsStepProps =
+  | { variant: "browse" }
+  | {
+      variant?: "select"
+      data: { projectId: string; serviceAccountEmail: string }
+      onUpdate: (data: Record<string, unknown>) => void
+    }
 
-interface Props {
-  data: { projectId: string; serviceAccountEmail: string }
-  onUpdate: (data: Record<string, unknown>) => void
+function ConnectionsTable({
+  rows,
+  onDelete,
+}: {
+  rows: SavedDestination[]
+  onDelete: (id: string) => void
+}) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Project</TableHead>
+          <TableHead className="font-mono text-xs">ID</TableHead>
+          <TableHead className="font-mono text-xs">Region</TableHead>
+          <TableHead>Service account</TableHead>
+          <TableHead className="w-[120px]">Status</TableHead>
+          <TableHead className="w-14 text-right" />
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((project) => (
+          <TableRow key={project.id}>
+            <TableCell>
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-[#4285F4] flex items-center justify-center flex-shrink-0">
+                  <span className="material-symbols-outlined text-white text-sm">cloud</span>
+                </div>
+                <span className="text-sm font-medium text-on-surface">{project.name}</span>
+              </div>
+            </TableCell>
+            <TableCell className="text-xs text-muted-foreground font-mono align-middle">
+              {project.projectId}
+            </TableCell>
+            <TableCell className="text-xs font-mono align-middle">{project.region}</TableCell>
+            <TableCell className="text-xs font-mono break-all max-w-[280px] text-on-surface">
+              {project.serviceAccount}
+            </TableCell>
+            <TableCell>
+              <span className="inline-flex items-center gap-1.5 text-xs text-emerald-800">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" aria-hidden />
+                {project.status}
+              </span>
+            </TableCell>
+            <TableCell className="text-right">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="text-destructive hover:text-destructive h-8 w-8"
+                onClick={() => onDelete(project.id)}
+                aria-label="Delete connection"
+              >
+                <span className="material-symbols-outlined text-base">delete</span>
+              </Button>
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  )
 }
 
-export default function DestinationsStep({ data, onUpdate }: Props) {
-  const selected = MOCK_GCP_PROJECTS.find((p) => p.id === data.projectId) ?? null
+export default function DestinationsStep(props: DestinationsStepProps) {
+  const destinations = useDestinationStore((s) => s.destinations)
+  const deleteDestination = useDestinationStore((s) => s.deleteDestination)
 
-  function handleSelect(project: typeof MOCK_GCP_PROJECTS[number]) {
-    onUpdate({ projectId: project.id, serviceAccountEmail: project.sa })
+  if (props.variant === "browse") {
+    return (
+      <div className="max-w-[1200px]">
+        <ConnectionsTable rows={destinations} onDelete={deleteDestination} />
+      </div>
+    )
+  }
+
+  const { data, onUpdate } = props
+  const selected = destinations.find((p) => p.projectId === data.projectId) ?? null
+
+  function handleSelect(d: SavedDestination) {
+    onUpdate({ projectId: d.projectId, serviceAccountEmail: d.serviceAccount })
   }
 
   return (
@@ -30,8 +112,8 @@ export default function DestinationsStep({ data, onUpdate }: Props) {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {MOCK_GCP_PROJECTS.map((project) => {
-          const isSelected = data.projectId === project.id
+        {destinations.map((project) => {
+          const isSelected = data.projectId === project.projectId
           return (
             <button
               key={project.id}
@@ -51,7 +133,7 @@ export default function DestinationsStep({ data, onUpdate }: Props) {
                   </div>
                   <div>
                     <p className="text-sm font-semibold text-on-surface">{project.name}</p>
-                    <p className="text-xs text-on-surface-variant font-mono">{project.id}</p>
+                    <p className="text-xs text-on-surface-variant font-mono">{project.projectId}</p>
                   </div>
                 </div>
                 {isSelected && (
@@ -66,12 +148,12 @@ export default function DestinationsStep({ data, onUpdate }: Props) {
 
               <div className="flex flex-col gap-1">
                 <p className="text-xs text-on-surface-variant uppercase tracking-wider font-semibold">Service Account</p>
-                <p className="text-xs font-mono text-on-surface break-all">{project.sa}</p>
+                <p className="text-xs font-mono text-on-surface break-all">{project.serviceAccount}</p>
               </div>
 
               <div className="flex items-center gap-1.5 mt-auto">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                <span className="text-xs text-emerald-700 font-medium">BigQuery Editor</span>
+                <span className="text-xs text-emerald-700 font-medium">{project.status}</span>
               </div>
             </button>
           )
@@ -83,17 +165,10 @@ export default function DestinationsStep({ data, onUpdate }: Props) {
           <span className="material-symbols-outlined text-base">check_circle</span>
           <span>
             Project <strong>{selected.name}</strong> selected · SA will connect as{" "}
-            <code className="text-xs font-mono">{selected.sa}</code>
+            <code className="text-xs font-mono">{selected.serviceAccount}</code>
           </span>
         </div>
       )}
-
-      <div className="border-t border-border pt-4">
-        <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-2">Coming soon</p>
-        <p className="text-xs text-on-surface-variant">
-          Google OAuth login will replace mock projects with your real GCP organization and allow linking custom service accounts.
-        </p>
-      </div>
     </div>
   )
 }

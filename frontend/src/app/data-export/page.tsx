@@ -10,7 +10,7 @@ export default function DataExportPage() {
   const [step, setStep] = useState(1)
   const [formData, setFormData] = useState({
     step1: { projectId: "", serviceAccountEmail: "" },
-    step2: { templateId: "", credentialId: "", tableName: "" },
+    step2: { platform: "", templateId: "", credentialIds: [] as string[], tableNames: {} as Record<string, string> },
     step3: { frequency: "daily", time: "00:00", scheduled: false },
   })
 
@@ -29,8 +29,8 @@ export default function DataExportPage() {
   const step1Completed = formData.step1.projectId !== ""
   const step2Completed =
     formData.step2.templateId !== "" &&
-    formData.step2.credentialId !== "" &&
-    formData.step2.tableName !== ""
+    formData.step2.credentialIds.length > 0 &&
+    formData.step2.credentialIds.every((id) => (formData.step2.tableNames[id] ?? "").trim() !== "")
 
   const progressPercent = (step / 3) * 100
 
@@ -39,7 +39,13 @@ export default function DataExportPage() {
       case 1:
         return <DestinationsStep data={formData.step1} onUpdate={onStep1Update} />
       case 2:
-        return <ExtractionStep data={formData.step2} onUpdate={onStep2Update} />
+        return (
+          <ExtractionStep
+            data={formData.step2}
+            onUpdate={onStep2Update}
+            projectId={formData.step1.projectId}
+          />
+        )
       case 3:
         return <ExportSchedulerStep data={formData} onUpdate={onStep3Update} />
       default:
