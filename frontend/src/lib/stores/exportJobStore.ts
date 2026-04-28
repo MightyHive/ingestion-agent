@@ -10,6 +10,7 @@ export interface ExportJob {
   tableNames: Record<string, string>
   ddl: string
   schedule: { frequency: string; time: string }
+  refreshWindowDays: number
   createdAt: string
 }
 

@@ -24,6 +24,18 @@ const FREQ_MS: Record<string, number> = {
   monthly: 2_592_000_000,
 }
 
+const PLATFORM_REFRESH_DEFAULTS: Record<string, number> = {
+  meta: 7,
+  facebook: 7,
+  tiktok: 7,
+  google: 3,
+  "google ads": 3,
+}
+
+function platformRefreshDefault(platform: string) {
+  return PLATFORM_REFRESH_DEFAULTS[platform.toLowerCase()] ?? 1
+}
+
 function seededRand(seed: string, i: number) {
   let h = 0
   for (let c = 0; c < seed.length; c++) h = (Math.imul(31, h) + seed.charCodeAt(c)) | 0
@@ -48,6 +60,7 @@ export default function ExportPlannerPage() {
 
   const [runningId, setRunningId] = useState<string | null>(null)
   const [actionNote, setActionNote] = useState<string | null>(null)
+  const [rerunningId, setRerunningId] = useState<string | null>(null)
 
   // Backfill
   const [backfillFor, setBackfillFor] = useState<ExportJob | null>(null)
@@ -60,6 +73,7 @@ export default function ExportPlannerPage() {
   const [editFor, setEditFor] = useState<ExportJob | null>(null)
   const [editFreq, setEditFreq] = useState("")
   const [editTime, setEditTime] = useState("")
+  const [editRefreshWindow, setEditRefreshWindow] = useState<number>(1)
 
   // Last runs expanded per job
   const [expandedJobs, setExpandedJobs] = useState<Set<string>>(new Set())
@@ -114,17 +128,24 @@ export default function ExportPlannerPage() {
   }
 
   function openEdit(job: ExportJob) {
+    const tmpl = getTemplate(job.templateId)
     setEditFor(job)
     setEditFreq(job.schedule.frequency.toLowerCase())
     setEditTime(job.schedule.time)
+    setEditRefreshWindow(
+      job.refreshWindowDays ?? platformRefreshDefault(tmpl?.platform ?? "")
+    )
   }
 
   function closeEdit() { setEditFor(null) }
 
   function handleEditSave() {
     if (!editFor) return
-    updateJob(editFor.id, { schedule: { frequency: editFreq, time: editTime } })
-    setActionNote(`Schedule updated to ${editFreq} @ ${editTime} UTC`)
+    updateJob(editFor.id, {
+      schedule: { frequency: editFreq, time: editTime },
+      refreshWindowDays: editRefreshWindow,
+    })
+    setActionNote(`Schedule updated: ${editFreq} @ ${editTime} UTC · ${editRefreshWindow}d refresh window`)
     closeEdit()
   }
 
@@ -136,7 +157,10 @@ export default function ExportPlannerPage() {
     })
   }
 
-  function handleRerun(name: string, date: Date) {
+  async function handleRerun(runId: string, name: string, date: Date) {
+    setRerunningId(runId)
+    await new Promise((r) => setTimeout(r, 800))
+    setRerunningId(null)
     setActionNote(`Re-run queued: ${name} (${date.toLocaleDateString()})`)
   }
 
@@ -182,6 +206,7 @@ export default function ExportPlannerPage() {
               const name = tmpl?.tableName ?? job.templateId
               const platform = tmpl?.platform ?? ""
               const fieldCount = tmpl?.columns.length ?? 0
+              const refreshDays = job.refreshWindowDays ?? platformRefreshDefault(platform)
               const expanded = expandedJobs.has(job.id)
               const runs = generateRuns(job)
 
@@ -193,12 +218,12 @@ export default function ExportPlannerPage() {
                       <div className="font-semibold text-base leading-tight">{name}</div>
                       <div className="text-sm text-muted-foreground mt-1">
                         {fieldCount} {fieldCount === 1 ? "field" : "fields"} &bull;{" "}
-                        {job.schedule.frequency.charAt(0).toUpperCase() + job.schedule.frequency.slice(1)}
-                        {platform && (
-                          <span className="ml-2 text-xs">
-                            &bull; {platform}
-                          </span>
-                        )}
+                        {job.schedule.frequency.charAt(0).toUpperCase() + job.schedule.frequency.slice(1)}{" "}
+                        @ {job.schedule.time} UTC
+                        {platform && <span className="ml-2">&bull; {platform}</span>}
+                      </div>
+                      <div className="text-xs text-muted-foreground mt-0.5">
+                        Refresh window: {refreshDays} {refreshDays === 1 ? "day" : "days"}
                       </div>
                     </div>
                     {platform && (
@@ -275,9 +300,10 @@ export default function ExportPlannerPage() {
                               size="sm"
                               variant="ghost"
                               className="h-6 px-2 text-[11px] shrink-0"
-                              onClick={() => handleRerun(name, run.date)}
+                              disabled={rerunningId === run.id}
+                              onClick={() => void handleRerun(run.id, name, run.date)}
                             >
-                              Re-run
+                              {rerunningId === run.id ? "…" : "Re-run"}
                             </Button>
                           </div>
                         ))}
@@ -356,6 +382,21 @@ export default function ExportPlannerPage() {
                 <div className="space-y-1.5">
                   <label className="text-xs font-medium text-muted-foreground">Time (UTC)</label>
                   <Input type="time" value={editTime} onChange={(e) => setEditTime(e.target.value)} />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    Refresh window (days)
+                  </label>
+                  <p className="text-[11px] text-muted-foreground -mt-0.5">
+                    Each run will re-fetch this many days back to catch retroactive updates.
+                  </p>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={90}
+                    value={editRefreshWindow}
+                    onChange={(e) => setEditRefreshWindow(Math.max(1, parseInt(e.target.value) || 1))}
+                  />
                 </div>
               </div>
               <DialogFooter>
