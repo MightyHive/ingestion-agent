@@ -11,7 +11,6 @@ const navItems = [
   { href: "/data-connection", icon: "ads_click",             label: "Data Connection" },
   { href: "/data-export",  icon: "system_update_alt",       label: "Data Export" },
   { href: "/export-planner",     icon: "schedule_send",          label: "Export Planner" },
-  { href: "/scheduler",  icon: "calendar_today",  label: "Scheduler" },
 ]
 
 export default function Sidebar() {
