@@ -12,10 +12,18 @@ const FREQUENCIES = [
   { id: "monthly", label: "Monthly", icon: "calendar_month" },
 ] as const
 
+function platformRefreshDefault(platform: string, templateName = ""): number {
+  const s = `${platform} ${templateName}`.toLowerCase()
+  if (s.includes("meta") || s.includes("facebook")) return 7
+  if (s.includes("tiktok")) return 7
+  if (s.includes("google")) return 3
+  return 1
+}
+
 interface ExportFormData {
   step1: { projectId: string; serviceAccountEmail: string }
   step2: { platform: string; templateId: string; credentialIds: string[]; tableNames: Record<string, string> }
-  step3: { frequency: string; time: string; scheduled: boolean }
+  step3: { frequency: string; time: string; scheduled: boolean; refreshWindowDays?: number }
 }
 
 interface Props {
@@ -30,6 +38,8 @@ export default function ExportSchedulerStep({ data, onUpdate }: Props) {
   const [saved, setSaved] = useState(data.step3.scheduled)
 
   const selectedTemplate = templates.find((t) => t.id === data.step2.templateId)
+  const defaultRefreshDays = platformRefreshDefault(data.step2.platform, selectedTemplate?.tableName ?? "")
+  const refreshWindowDays = data.step3.refreshWindowDays ?? defaultRefreshDays
   const destinationTables = data.step2.credentialIds
     .map((credentialId) => data.step2.tableNames[credentialId])
     .filter((tableName): tableName is string => Boolean(tableName?.trim()))
@@ -51,6 +61,7 @@ export default function ExportSchedulerStep({ data, onUpdate }: Props) {
         frequency: data.step3.frequency,
         time:      data.step3.time,
       },
+      refreshWindowDays,
     })
     onUpdate({ scheduled: true })
     setSaving(false)
@@ -127,6 +138,29 @@ export default function ExportSchedulerStep({ data, onUpdate }: Props) {
         />
       </div>
 
+      {/* Refresh window */}
+      <div className="flex flex-col gap-1.5">
+        <label className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider">
+          Refresh window (days)
+        </label>
+        <p className="text-xs text-on-surface-variant">
+          Each run re-fetches this many days back to catch retroactive updates.{" "}
+          {data.step2.platform && (
+            <span>Default for {data.step2.platform}: <strong>{defaultRefreshDays}d</strong>.</span>
+          )}
+        </p>
+        <input
+          type="number"
+          min={1}
+          max={90}
+          value={refreshWindowDays}
+          onChange={(e) =>
+            onUpdate({ refreshWindowDays: Math.max(1, parseInt(e.target.value) || 1) })
+          }
+          className="w-40 px-3 py-2 border border-border rounded-lg bg-background text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+        />
+      </div>
+
       {/* CTA */}
       {saved ? (
         <div className="flex items-center gap-3 p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm">
@@ -134,8 +168,8 @@ export default function ExportSchedulerStep({ data, onUpdate }: Props) {
           <div>
             <p className="font-semibold">Export scheduled</p>
             <p className="text-xs mt-0.5">
-              Runs <strong>{data.step3.frequency}</strong> at <strong>{data.step3.time} UTC</strong> · Tables:{" "}
-              <strong>{destinationTables.length}</strong>
+              Runs <strong>{data.step3.frequency}</strong> at <strong>{data.step3.time} UTC</strong> · Refresh window:{" "}
+              <strong>{refreshWindowDays}d</strong> · Tables: <strong>{destinationTables.length}</strong>
             </p>
           </div>
         </div>

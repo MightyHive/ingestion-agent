@@ -24,16 +24,12 @@ const FREQ_MS: Record<string, number> = {
   monthly: 2_592_000_000,
 }
 
-const PLATFORM_REFRESH_DEFAULTS: Record<string, number> = {
-  meta: 7,
-  facebook: 7,
-  tiktok: 7,
-  google: 3,
-  "google ads": 3,
-}
-
-function platformRefreshDefault(platform: string) {
-  return PLATFORM_REFRESH_DEFAULTS[platform.toLowerCase()] ?? 1
+function platformRefreshDefault(platform: string, templateName = ""): number {
+  const s = `${platform} ${templateName}`.toLowerCase()
+  if (s.includes("meta") || s.includes("facebook")) return 7
+  if (s.includes("tiktok")) return 7
+  if (s.includes("google")) return 3
+  return 1
 }
 
 function seededRand(seed: string, i: number) {
@@ -133,7 +129,7 @@ export default function ExportPlannerPage() {
     setEditFreq(job.schedule.frequency.toLowerCase())
     setEditTime(job.schedule.time)
     setEditRefreshWindow(
-      job.refreshWindowDays ?? platformRefreshDefault(tmpl?.platform ?? "")
+      job.refreshWindowDays ?? platformRefreshDefault(tmpl?.platform ?? "", tmpl?.tableName ?? "")
     )
   }
 
@@ -206,7 +202,7 @@ export default function ExportPlannerPage() {
               const name = tmpl?.tableName ?? job.templateId
               const platform = tmpl?.platform ?? ""
               const fieldCount = tmpl?.columns.length ?? 0
-              const refreshDays = job.refreshWindowDays ?? platformRefreshDefault(platform)
+              const refreshDays = job.refreshWindowDays ?? platformRefreshDefault(platform, tmpl?.tableName ?? "")
               const expanded = expandedJobs.has(job.id)
               const runs = generateRuns(job)
 
