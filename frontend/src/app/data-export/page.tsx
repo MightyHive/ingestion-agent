@@ -11,7 +11,7 @@ export default function DataExportPage() {
   const [formData, setFormData] = useState({
     step1: { projectId: "", serviceAccountEmail: "" },
     step2: { platform: "", templateId: "", credentialIds: [] as string[], tableNames: {} as Record<string, string> },
-    step3: { frequency: "daily", time: "00:00", scheduled: false },
+    step3: { frequency: "daily", time: "00:00", scheduled: false, refreshWindowDays: undefined as number | undefined },
   })
 
   const onStep1Update = useCallback((data: Record<string, unknown>) => {
