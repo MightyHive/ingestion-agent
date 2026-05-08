@@ -1,0 +1,291 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/MightyHive/ingestion-agent/blob/main/src/ingestion/manifest/schema.json",
+  "title": "MDS Connector Manifest",
+  "description": "Declarative manifest for a connector in the connectors-library submodule. This is the single source of truth consumed by the frontend catalog, the deterministic DDL generator (Manifest.to_ddl), the connector dispatcher, and CI validation. See docs/architecture.md \u00a73.2.",
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "platform",
+    "connector",
+    "version",
+    "endpoint",
+    "auth",
+    "params",
+    "available_fields"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Globally unique manifest id, snake_case. Used as the primary key in /api/catalog and as the BigQuery table suffix. Example: 'meta_facebook_insights'."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable name shown in the frontend catalog. Example: 'Facebook Ads Insights'."
+    },
+    "platform": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Top-level grouping key for the frontend catalog. Maps to the parent folder inside the submodule. Examples: 'meta', 'google_ads', 'dv360'."
+    },
+    "connector": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Specific connector identifier within a platform. Maps to the second-level folder. Examples: 'facebook', 'ig', 'reports'."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version of the manifest contract. Bump major when removing fields or changing the params shape; bump minor when adding optional fields or params; bump patch for documentation/metadata changes."
+    },
+    "description": {
+      "type": "string",
+      "description": "Optional long-form description shown in the frontend tooltip."
+    },
+    "owner": {
+      "type": "string",
+      "description": "Optional team or person responsible for keeping this connector working."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["alpha", "beta", "stable", "deprecated"],
+      "default": "alpha",
+      "description": "Lifecycle stage. The frontend can hide non-stable connectors behind a feature flag if desired."
+    },
+    "endpoint": {
+      "type": "object",
+      "description": "How to invoke this connector. The dispatcher uses 'module_path' + 'function_name' in LocalBackend (dev) and 'cloud_function_url' in HTTPBackend (prod).",
+      "required": ["module_path", "function_name"],
+      "additionalProperties": false,
+      "properties": {
+        "module_path": {
+          "type": "string",
+          "description": "Importable Python module path relative to the submodule root, used by LocalBackend via importlib. Example: 'meta.facebook.facebook_ads'."
+        },
+        "function_name": {
+          "type": "string",
+          "default": "fetch",
+          "description": "Name of the function exported by 'module_path' that implements the contract fetch(params, context) -> {status, code, records, meta, errors}."
+        },
+        "cloud_function_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "URL of the deployed Cloud Function for HTTPBackend. Per-tenant URL is allowed — see docs/architecture.md \u00a75 for impersonation flow."
+        },
+        "cloud_function_name": {
+          "type": "string",
+          "description": "Logical name of the CF used by deploy scripts."
+        },
+        "cloud_function_region": {
+          "type": "string",
+          "default": "us-central1",
+          "description": "GCP region of the deployed Cloud Function."
+        }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "description": "Authentication contract: what TenantContext must inject into 'context' before invoking the connector.",
+      "required": ["context_required"],
+      "additionalProperties": false,
+      "properties": {
+        "context_required": {
+          "type": "array",
+          "items": {"type": "string"},
+          "uniqueItems": true,
+          "description": "List of keys that must be present in the 'context' arg of fetch(). The dispatcher will refuse to invoke if any are missing. Example: ['ad_account_id', 'access_token']."
+        },
+        "secrets": {
+          "type": "array",
+          "description": "Mapping from context keys to Secret Manager resources. The dispatcher resolves these via TenantContext.",
+          "items": {
+            "type": "object",
+            "required": ["context_key", "secret_id"],
+            "additionalProperties": false,
+            "properties": {
+              "context_key": {"type": "string"},
+              "secret_id": {"type": "string", "description": "Secret Manager resource id (without project prefix). Example: 'meta-access-token'."},
+              "version": {"type": "string", "default": "latest"}
+            }
+          }
+        },
+        "scopes": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "OAuth scopes required by this connector. Documentation only; not enforced by the dispatcher."
+        }
+      }
+    },
+    "params": {
+      "type": "object",
+      "description": "Input parameters accepted by the connector. The validator node uses this to reject malformed requests before invocation.",
+      "additionalProperties": false,
+      "properties": {
+        "required": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/param"},
+          "default": []
+        },
+        "optional": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/param"},
+          "default": []
+        },
+        "one_of": {
+          "type": "array",
+          "description": "Mutually-exclusive parameter groups. Exactly one group must be fully present. Useful when a connector accepts e.g. ['date_start','date_stop'] OR ['since','until'].",
+          "items": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1
+          }
+        }
+      }
+    },
+    "available_fields": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Catalog of fields the connector can return. The frontend uses this to render the field selector. Manifest.to_ddl uses (name, type, mode, description) to emit BigQuery DDL.",
+      "items": {
+        "type": "object",
+        "required": ["name", "type"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
+            "description": "Field name as it appears in the connector's response and as the BigQuery column name."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "STRING",
+              "INT64",
+              "FLOAT64",
+              "NUMERIC",
+              "BIGNUMERIC",
+              "BOOL",
+              "DATE",
+              "DATETIME",
+              "TIMESTAMP",
+              "TIME",
+              "BYTES",
+              "JSON",
+              "GEOGRAPHY",
+              "ARRAY",
+              "STRUCT"
+            ],
+            "description": "BigQuery type. Manifest.to_ddl emits this verbatim."
+          },
+          "mode": {
+            "type": "string",
+            "enum": ["NULLABLE", "REQUIRED", "REPEATED"],
+            "default": "NULLABLE"
+          },
+          "description": {
+            "type": "string",
+            "description": "Optional column description, included in the BigQuery DDL OPTIONS clause."
+          },
+          "items_type": {
+            "type": "string",
+            "description": "When type=ARRAY, the type of the array elements (e.g. 'STRING')."
+          },
+          "fields": {
+            "type": "array",
+            "items": {"$ref": "#/properties/available_fields/items"},
+            "description": "When type=STRUCT, the nested field definitions."
+          },
+          "selectable": {
+            "type": "boolean",
+            "default": true,
+            "description": "If false, the field is always included (e.g. partition keys) and not exposed in the frontend selector."
+          }
+        }
+      }
+    },
+    "table_naming": {
+      "type": "object",
+      "description": "How the destination BigQuery table is named and physically organized. Optional — defaults are derived from id.",
+      "additionalProperties": false,
+      "properties": {
+        "bronze_pattern": {
+          "type": "string",
+          "default": "bronze.{id}",
+          "description": "Bronze layer table naming pattern. Tokens: {platform}, {connector}, {id}, {version_major}."
+        },
+        "partition_field": {
+          "type": "string",
+          "description": "Name of the field used for time partitioning. Must reference a field in 'available_fields' of type DATE/DATETIME/TIMESTAMP."
+        },
+        "partition_type": {
+          "type": "string",
+          "enum": ["DAY", "HOUR", "MONTH", "YEAR"],
+          "default": "DAY"
+        },
+        "clustering_fields": {
+          "type": "array",
+          "items": {"type": "string"},
+          "maxItems": 4,
+          "description": "Up to 4 fields used for clustering. BigQuery enforces this maximum."
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "description": "Operational limits the dispatcher should respect.",
+      "additionalProperties": false,
+      "properties": {
+        "max_records_per_call": {"type": "integer", "minimum": 1},
+        "max_call_duration_seconds": {"type": "integer", "minimum": 1, "default": 540},
+        "rate_limit_qps": {"type": "number", "minimum": 0}
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Free-form key/value pairs for connector-specific context (e.g. API version, doc URLs).",
+      "additionalProperties": {"type": "string"}
+    }
+  },
+  "$defs": {
+    "param": {
+      "type": "object",
+      "required": ["name", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["string", "integer", "number", "boolean", "date", "datetime", "array", "object", "field_list"],
+          "description": "Logical type for validation. 'field_list' is special: the validator checks that every entry exists in available_fields (used for the canonical 'fields' param)."
+        },
+        "items_type": {
+          "type": "string",
+          "description": "When type=array, the type of array elements (e.g. 'string')."
+        },
+        "description": {"type": "string"},
+        "default": {
+          "description": "Default value used when the param is omitted. Must match 'type'."
+        },
+        "enum": {
+          "type": "array",
+          "description": "Closed list of accepted values."
+        },
+        "pattern": {
+          "type": "string",
+          "description": "Regex constraint, applied to the stringified value when type=string."
+        },
+        "minimum": {"type": "number"},
+        "maximum": {"type": "number"},
+        "min_length": {"type": "integer", "minimum": 0},
+        "max_length": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}
