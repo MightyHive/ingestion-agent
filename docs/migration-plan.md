@@ -54,7 +54,8 @@ main ─────────────────────────
 - [x] Escribir `docs/architecture.md`.
 - [x] Escribir `docs/migration-plan.md` (este archivo).
 - [x] **Alinear con Facundo** sobre el cambio de dirección (su trabajo en `b9b9f4f` y `427ab59` se elimina; preservado en `legacy-mds-agents`). Conversación cerrada el 2026-05-08.
-- [ ] **Avisar a Mili** del rename eventual del repo (cambia origin) y compartir el contrato del nuevo `/api/catalog` para que el frontend pueda alinearse. → contrato disponible al final de Fase 1; aviso del rename al hacer el merge final.
+- [x] Compartir el contrato del nuevo `/api/catalog` con Mili → vive en [`docs/api.md`](api.md) como doc vivo (se actualiza en cada fase que toque la API).
+- [ ] **Avisar a Mili del rename eventual del repo** (`ingestion-agent` → `mds`, cambia `origin`) → al hacer el merge final.
 - [x] Crear `legacy-mds-agents` desde `main` y push. (Branch protection manual en GitHub UI — pendiente de marcar acá cuando se confirme.)
 - [x] Crear `new-mds-deterministic` desde `main` y push.
 - [x] Primer commit de `new-mds-deterministic`: los tres docs (`9aaed9e`).
@@ -131,7 +132,7 @@ main ─────────────────────────
   - `GET /api/catalog` → `{version, count, connectors: [summary, ...]}`
   - `GET /api/catalog/{id}` → manifest completo o 404
 - [x] Smoke test: catálogo descubre `meta_facebook_ad_insights` y la respuesta valida contra el schema.
-- [ ] **Compartir el contrato del endpoint con Mili** (shape de respuesta, ejemplos). El cambio del frontend para consumirlo lo hace ella; nosotros solo entregamos la API estable. → pendiente: redactar nota / sample JSON al final de la fase, una vez staging tenga `/api/catalog` corriendo.
+- [x] **Compartir el contrato del endpoint con Mili** → [`docs/api.md`](api.md) (doc vivo). Incluye `/api/catalog`, `/api/catalog/{id}`, los endpoints legacy del grafo viejo (con su shape SSE), el mapping BigQuery → `FieldType` para el frontend, y un roadmap por fase con qué cambia y cuándo.
 
 ### Contrato `/api/catalog` (v1.0)
 
@@ -167,7 +168,7 @@ main ─────────────────────────
 - [x] `curl http://localhost:8000/api/catalog` devuelve un JSON con al menos un conector y matchea `manifest/schema.json`.
 - [x] Loader rechaza manifests inválidos con detalle de errores (JSONPointer + mensaje del validator).
 - [x] Catalog detecta y bloquea ids duplicados.
-- [ ] Mili tiene el shape documentado para ajustar el frontend cuando le convenga (no es bloqueante para nosotros).
+- [x] Mili tiene el shape documentado en [`docs/api.md`](api.md) para ajustar el frontend cuando le convenga (no es bloqueante para nosotros).
 - [x] El grafo viejo sigue intacto y funcional.
 
 ### Riesgos
