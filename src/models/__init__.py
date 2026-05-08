@@ -1,4 +1,7 @@
-from .lol import (
+# LOL Protocol moved to src/shared/lol/ as part of Fase 0 of the MDS refactor.
+# Re-exported from here for backward compatibility; this whole models/ package
+# is scheduled for deletion in Fase 4 (see docs/migration-plan.md).
+from shared.lol import (
     BaseLOL,
     TaskStep,
     CoordinatorPayload,

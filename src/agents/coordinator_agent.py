@@ -8,7 +8,7 @@ from typing import Any, get_args
 
 from pydantic_ai import Agent
 
-from models.lol import AGENT_NAMES, CoordinatorLOL
+from shared.lol import AGENT_NAMES, CoordinatorLOL
 
 try:
     from pydantic_ai.models.vertexai import VertexAIModel  # type: ignore[import-not-found]

@@ -12,8 +12,8 @@ from pydantic_ai.providers.google import GoogleProvider
 from pydantic_ai_skills import SkillsToolset  # pyright: ignore[reportMissingImports]
 
 from config.settings import settings
-from models.lol import SoftwareEngineerLOL
-from observability import extract_usage, run_logged_tool
+from shared.lol import SoftwareEngineerLOL
+from shared.observability import extract_usage, run_logged_tool
 from tools.software_engineer_tools import (
     _find_connector,
     _get_gold_standard_code,

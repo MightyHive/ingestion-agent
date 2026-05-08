@@ -44,15 +44,15 @@ from agents.software_engineer_agent import (
 from agents.api_researcher_agent import build_api_researcher_agent, APIResearcherDeps
 from agents.synthesizer_agent import build_synthesizer_agent
 from config.settings import settings
-from models.lol import DataArchitectLOL, SoftwareEngineerLOL, APIResearcherLOL
-from state import AgentGraphState
+from shared.lol import DataArchitectLOL, SoftwareEngineerLOL, APIResearcherLOL
+from shared.state import AgentGraphState
 from synthesis_enrichment import (
     extract_enrichment_from_events,
     format_mandatory_data_block,
     merge_missing_structured_content,
 )
 from models.tool_outputs import to_json_safe
-from observability import (
+from shared.observability import (
     empty_usage,
     extract_usage,
     is_observability_enabled,

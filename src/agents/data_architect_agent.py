@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover - vertexai module not in all pydantic-ai
         )
 
 from config.settings import settings
-from models.lol import DataArchitectLOL
+from shared.lol import DataArchitectLOL
 from tools.architect_tools import DataArchitectDeps, register_architect_tools
 
 SYSTEM_PROMPT = """\

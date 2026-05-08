@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - vertexai module not in all pydantic-ai
         )
 
 from config.settings import settings
-from models.lol import SynthesizerLOL
+from shared.lol import SynthesizerLOL
 
 SYSTEM_PROMPT = """You are the Synthesizer: the single public voice of an autonomous AI DataOps platform.
 

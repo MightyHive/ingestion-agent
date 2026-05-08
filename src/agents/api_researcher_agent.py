@@ -15,7 +15,7 @@ from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
 from pydantic_ai_skills import SkillsToolset  # pyright: ignore[reportMissingImports]
 from config.settings import settings
-from models.lol import (
+from shared.lol import (
     APIResearcherAuthInfo,
     APIResearcherFieldMapping,
     APIResearcherLOL,
@@ -23,7 +23,7 @@ from models.lol import (
     FreshnessCheck,
 )
 from models.tool_outputs import dump_tool_output
-from observability import extract_usage, run_logged_tool
+from shared.observability import extract_usage, run_logged_tool
 from tools.api_researcher_tools import (
     _analyze_json_schema,
     _read_documentation_url,
