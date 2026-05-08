@@ -26,6 +26,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from ingestion.manifest import (
+    CATALOG_API_VERSION,
+    ManifestValidationError,
+    get_default_catalog,
+)
 from main import get_compiled_graph, init_graph_async
 
 
@@ -350,6 +355,70 @@ async def get_templates() -> dict[str, Any]:
             {"id": "google-ads", "name": "Google Ads", "category": "Paid Media", "status": "active"},
         ]
     }
+
+
+@app.get("/api/catalog")
+async def list_catalog() -> dict[str, Any]:
+    """List every connector manifest available in the connectors-library submodule.
+
+    Stable response shape (the contract shared with the frontend; bump
+    ``CATALOG_API_VERSION`` if it changes in a non-additive way):
+
+        {
+          "version": "1.0",
+          "count": <int>,
+          "connectors": [
+            {
+              "id": "meta_facebook_ad_insights",
+              "name": "Facebook Ads — Ad-level Insights",
+              "platform": "meta",
+              "connector": "facebook",
+              "version": "0.1.0",
+              "status": "alpha" | "beta" | "stable" | "deprecated",
+              "description": "..."?,
+              "owner": "..."?,
+              "available_fields_count": <int>,
+              "params_summary": {
+                "required": [<param_name>, ...],
+                "optional": [<param_name>, ...],
+                "one_of": [[<param_name>, ...], ...]
+              }
+            },
+            ...
+          ]
+        }
+
+    The full manifest (including ``available_fields`` definitions, ``auth``
+    contract, ``endpoint`` and ``table_naming``) is served by
+    ``GET /api/catalog/{id}`` to keep the index payload small.
+    """
+    try:
+        items = get_default_catalog().list_summaries()
+    except ManifestValidationError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"invalid manifest in connectors-library: {exc}",
+        ) from exc
+    return {"version": CATALOG_API_VERSION, "count": len(items), "connectors": items}
+
+
+@app.get("/api/catalog/{manifest_id}")
+async def get_catalog_entry(manifest_id: str) -> dict[str, Any]:
+    """Return the full validated manifest for a single connector by id (snake_case).
+
+    The body is the raw manifest as defined by ``src/ingestion/manifest/schema.json``.
+    Returns 404 if no manifest with that id exists in the loaded catalog.
+    """
+    try:
+        manifest = get_default_catalog().get(manifest_id)
+    except ManifestValidationError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"invalid manifest in connectors-library: {exc}",
+        ) from exc
+    if manifest is None:
+        raise HTTPException(status_code=404, detail=f"manifest '{manifest_id}' not found")
+    return manifest
 
 
 @app.get("/api/sessions/{session_id}/history")

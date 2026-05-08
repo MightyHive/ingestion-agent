@@ -46,16 +46,18 @@ main ─────────────────────────
 
 **Objetivo:** preservar el sistema multi-agente intacto en `legacy-mds-agents` y arrancar la branch de trabajo `new-mds-deterministic` con los docs como primer commit.
 
+**Estado:** ✅ completa (2026-05-08).
+
 ### Tareas
 
 - [x] Escribir `docs/adr/001-multi-agent-to-deterministic-pipeline.md`.
 - [x] Escribir `docs/architecture.md`.
 - [x] Escribir `docs/migration-plan.md` (este archivo).
 - [x] **Alinear con Facundo** sobre el cambio de dirección (su trabajo en `b9b9f4f` y `427ab59` se elimina; preservado en `legacy-mds-agents`). Conversación cerrada el 2026-05-08.
-- [ ] **Avisar a Mili** del rename eventual del repo (cambia origin) y compartir el contrato del nuevo `/api/catalog` para que el frontend pueda alinearse.
-- [ ] Crear `legacy-mds-agents` desde `main` y push (con branch protection en GitHub: no permitir push directo después).
-- [ ] Crear `new-mds-deterministic` desde `main` y push.
-- [ ] Primer commit de `new-mds-deterministic`: los tres docs.
+- [ ] **Avisar a Mili** del rename eventual del repo (cambia origin) y compartir el contrato del nuevo `/api/catalog` para que el frontend pueda alinearse. → contrato disponible al final de Fase 1; aviso del rename al hacer el merge final.
+- [x] Crear `legacy-mds-agents` desde `main` y push. (Branch protection manual en GitHub UI — pendiente de marcar acá cuando se confirme.)
+- [x] Crear `new-mds-deterministic` desde `main` y push.
+- [x] Primer commit de `new-mds-deterministic`: los tres docs (`9aaed9e`).
 - [ ] Renombrar el repo en GitHub `ingestion-agent` → `mds` (post-merge final, no acá). Actualizar `origin` en clones locales: `git remote set-url origin https://github.com/<owner>/mds.git`.
 - [ ] Actualizar el `README.md` raíz (en `new-mds-deterministic`, no acá): título, descripción, link a docs. Esto puede ir en cualquier fase posterior.
 
@@ -75,33 +77,35 @@ main ─────────────────────────
 
 **Objetivo:** introducir `connectors-library` como submodule y crear el esqueleto vacío de la nueva estructura sin tocar nada del código viejo.
 
+**Estado:** ✅ completa (2026-05-08). Commits: `a19c240` (parte aditiva) + `590d8de` (file moves).
+
 ### Tareas
 
-- [ ] `git submodule add <url-de-connectors-library> ./connectors-library`. Commit del `.gitmodules`.
-- [ ] Crear directorios vacíos con `__init__.py`:
+- [x] `git submodule add https://github.com/MightyHive/connectors-library.git ./connectors-library`. Commit del `.gitmodules`. Submodule pinned a `98bdb5d`.
+- [x] Crear directorios vacíos con `__init__.py`:
   - `src/ingestion/`, `src/ingestion/nodes/`, `src/ingestion/dispatcher/`, `src/ingestion/manifest/`, `src/ingestion/auth/`
   - `src/warehouse_explorer/`
   - `src/shared/`
-- [ ] Mover (sin modificar lógica):
+- [x] Mover (sin modificar lógica):
   - `src/observability.py` → `src/shared/observability.py`
   - `src/state.py` → `src/shared/state.py`
-  - `src/models/lol.py` → `src/shared/lol/__init__.py` (manteniendo imports relativos)
-- [ ] Ajustar imports en `main.py` y agentes para que el grafo viejo siga funcionando.
-- [ ] Escribir `src/ingestion/manifest/schema.json` con el JSON Schema del manifest (ver `docs/architecture.md` §3.2).
-- [ ] Escribir el primer manifest real: `connectors-library/meta/facebook/manifest.json` y commit en el submodule.
-- [ ] Escribir `src/warehouse_explorer/README.md` placeholder.
+  - `src/models/lol.py` → `src/shared/lol/__init__.py` (con `src/models/__init__.py` re-exportando hasta Fase 4)
+- [x] Ajustar imports en `main.py` y los 5 agentes para que el grafo viejo siga funcionando.
+- [x] Escribir `src/ingestion/manifest/schema.json` con el JSON Schema del manifest (ver `docs/architecture.md` §3.2).
+- [x] Escribir el primer manifest real: `connectors-library/meta/facebook/manifest.json` y commit en el submodule.
+- [x] Escribir `src/warehouse_explorer/README.md` placeholder.
 
 ### Criterios de "done"
 
-- `pytest` (lo poco que haya) sigue pasando.
-- `python src/api.py` arranca igual que antes.
-- El frontend funciona idéntico (sigue pegándole al grafo viejo).
-- `import src.shared.lol` funciona.
-- `git submodule status` muestra el submodule sano.
+- [x] `pytest` (lo poco que haya) sigue pasando.
+- [x] `python src/api.py` arranca igual que antes (verificación manual de Ivan).
+- [x] El frontend funciona idéntico (sigue pegándole al grafo viejo).
+- [x] `import src.shared.lol` funciona (smoke test en sandbox).
+- [x] `git submodule status` muestra el submodule sano.
 
 ### Riesgos
 
-- Imports rotos al mover archivos a `shared/`. Mitigación: hacerlo en un commit pequeño aislado y correr el grafo antes de mergear.
+- Imports rotos al mover archivos a `shared/`. Mitigación: hacerlo en un commit pequeño aislado y correr el grafo antes de mergear. → mitigado, los renames se commitearon como rename detection 100% (`-M50%`).
 
 ---
 
@@ -109,25 +113,66 @@ main ─────────────────────────
 
 **Objetivo:** que el frontend ya pueda listar el catálogo desde manifests reales, en paralelo al grafo viejo.
 
+**Estado:** ✅ completa (2026-05-08). Loader + catalog + endpoints `/api/catalog` y `/api/catalog/{id}` operativos sobre el submodule.
+
 ### Tareas
 
-- [ ] Implementar `src/ingestion/manifest/loader.py`:
-  - `scan_manifests(root: Path) -> list[Manifest]`
-  - validación contra `schema.json`
-  - cache en memoria
-- [ ] Implementar `src/ingestion/manifest/catalog.py` y exponer endpoints `GET /api/catalog` y `GET /api/catalog/{id}` en `src/api.py`.
-- [ ] **Compartir el contrato del endpoint con Mili** (shape de respuesta, ejemplos). El cambio del frontend para consumirlo lo hace ella; nosotros solo entregamos la API estable.
-- [ ] Smoke test: `curl /api/catalog` devuelve al menos el manifest de Facebook con el shape acordado.
+- [x] Implementar `src/ingestion/manifest/loader.py`:
+  - `load_schema()` cacheado (Draft 2020-12)
+  - `validate_manifest(data, source)` con `ManifestValidationError` que reporta JSONPointer + mensaje
+  - `load_manifest(path)` lee, valida y devuelve dict
+  - cache en memoria (`@lru_cache` para el schema, lazy en `Catalog._ensure_loaded`)
+- [x] Implementar `src/ingestion/manifest/catalog.py`:
+  - `scan_manifests(root)` recorre el submodule e ignora carpetas hidden
+  - `Catalog` con `all()`, `get(id)`, `list_summaries()`, `reload()`
+  - `summarize_for_listing(manifest)` proyecta al shape del listing
+  - `get_default_catalog()` singleton apuntando al submodule
+- [x] Exponer endpoints en `src/api.py`:
+  - `GET /api/catalog` → `{version, count, connectors: [summary, ...]}`
+  - `GET /api/catalog/{id}` → manifest completo o 404
+- [x] Smoke test: catálogo descubre `meta_facebook_ad_insights` y la respuesta valida contra el schema.
+- [ ] **Compartir el contrato del endpoint con Mili** (shape de respuesta, ejemplos). El cambio del frontend para consumirlo lo hace ella; nosotros solo entregamos la API estable. → pendiente: redactar nota / sample JSON al final de la fase, una vez staging tenga `/api/catalog` corriendo.
+
+### Contrato `/api/catalog` (v1.0)
+
+```json
+{
+  "version": "1.0",
+  "count": 1,
+  "connectors": [
+    {
+      "id": "meta_facebook_ad_insights",
+      "name": "Facebook Ads — Ad-level Insights",
+      "platform": "meta",
+      "connector": "facebook",
+      "version": "0.1.0",
+      "status": "alpha",
+      "description": "...",
+      "owner": "Ivan Krawchik",
+      "available_fields_count": 31,
+      "params_summary": {
+        "required": ["fields"],
+        "optional": ["days_back", "date_start", "date_stop", "since", "until"],
+        "one_of": [["days_back"], ["date_start", "date_stop"], ["since", "until"]]
+      }
+    }
+  ]
+}
+```
+
+`GET /api/catalog/{id}` devuelve el manifest crudo tal cual lo define `src/ingestion/manifest/schema.json`. El listing de `/api/catalog` se mantiene chico a propósito; los fields completos sólo viajan en el lookup individual.
 
 ### Criterios de "done"
 
-- `curl http://localhost:8000/api/catalog` devuelve un JSON con al menos un conector y matchea `manifest/schema.json`.
-- Mili tiene el shape documentado para ajustar el frontend cuando le convenga (no es bloqueante para nosotros).
-- El grafo viejo sigue intacto y funcional.
+- [x] `curl http://localhost:8000/api/catalog` devuelve un JSON con al menos un conector y matchea `manifest/schema.json`.
+- [x] Loader rechaza manifests inválidos con detalle de errores (JSONPointer + mensaje del validator).
+- [x] Catalog detecta y bloquea ids duplicados.
+- [ ] Mili tiene el shape documentado para ajustar el frontend cuando le convenga (no es bloqueante para nosotros).
+- [x] El grafo viejo sigue intacto y funcional.
 
 ### Riesgos
 
-- Discrepancias entre el shape que devolvemos y lo que el frontend espera. Mitigación: definir el `schema.json` con Mili antes de escribirlo, o mirar `frontend/src/lib/platforms/types.ts` y `frontend/src/lib/stores/connectorStore.ts` para inferir el contrato esperado.
+- Discrepancias entre el shape que devolvemos y lo que el frontend espera. Mitigación: el shape se inspiró en `frontend/src/lib/platforms/types.ts` y `frontend/src/lib/stores/connectorStore.ts`. Cuando Mili integre, vamos a tener que mappear `available_fields[*].type` (BigQuery types) ↔ `FieldType` del frontend (`STRING|INTEGER|FLOAT|DATE|BOOLEAN`). Doc en `architecture.md` cuando empiece la integración.
 
 ---
 

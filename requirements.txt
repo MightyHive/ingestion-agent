@@ -24,3 +24,7 @@ chromadb>=0.5.0
 # PydanticAI agents + Google provider + skills
 pydantic-ai-slim[google]>=1.68.0
 pydantic-ai-skills>=0.5.1
+
+# Manifest validation (Phase 1: connector catalog).
+# Draft 2020-12 support landed in jsonschema >=4.18.
+jsonschema>=4.20
