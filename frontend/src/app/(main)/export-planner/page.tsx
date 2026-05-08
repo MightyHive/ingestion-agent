@@ -237,6 +237,7 @@ export default function ExportPlannerPage() {
                       disabled={runningId === job.id}
                       onClick={() => void handleRunNow(job)}
                       className="h-8"
+                      style={{ backgroundColor: "#5c27fe", color: "white" }}
                     >
                       {runningId === job.id ? "…" : "Run now"}
                     </Button>

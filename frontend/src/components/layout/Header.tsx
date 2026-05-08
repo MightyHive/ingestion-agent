@@ -1,3 +1,5 @@
+import { UserMenu } from "@/components/auth/UserMenu"
+
 export default function Header() {
     return (
       <header className="fixed top-0 w-full z-50 flex justify-between items-center px-6 h-16 bg-white">
@@ -22,7 +24,7 @@ export default function Header() {
           <button className="p-2 hover:bg-slate-50 rounded-lg transition-colors">
             <span className="material-symbols-outlined text-slate-500">notifications</span>
           </button>
-          <div className="w-8 h-8 rounded-full bg-slate-300 ml-2" />
+          <UserMenu />
         </div>
   
       </header>
