@@ -1,9 +1,11 @@
 # MDS API — referencia de contratos
 
 > **Audiencia:** Mili (frontend, `frontend/`). Este documento es la fuente de verdad de los endpoints HTTP que sirve el backend de MDS.
-> **Estado:** doc vivo. Se actualiza en cada fase del refactor que toque la API. Última edición: 2026-05-08 (Fase 1 ✅).
+> **Estado:** doc vivo. Se actualiza en cada fase del refactor que toque la API. Última edición: **2026-05-11 (Fase 3 ✅)**.
 >
 > Documentos relacionados: [`migration-plan.md`](migration-plan.md), [`architecture.md`](architecture.md), [`adr/001-multi-agent-to-deterministic-pipeline.md`](adr/001-multi-agent-to-deterministic-pipeline.md).
+>
+> ⚠️ **Breaking change en Fase 3:** los endpoints `/api/chat`, `/api/submit_input`, `/api/templates` y `/api/sessions/{id}/history` quedan **deprecated** y serán **eliminados en Fase 4**. El reemplazo es `POST /api/run` (sync JSON, sin SSE, sin estado de sesión). Cuando puedas, migrá el frontend a `/api/run`.
 
 ---
 
@@ -27,15 +29,16 @@ RUN_MODE=api uvicorn api:app --reload --host 0.0.0.0 --port 8000
 
 | Método | Path | Estado | Reemplaza a |
 |--------|------|--------|-------------|
-| GET    | `/api/catalog`                          | ✅ estable (v1.0)            | sustituirá a `/api/templates` |
-| GET    | `/api/catalog/{id}`                     | ✅ estable (v1.0)            | sin equivalente legacy |
-| GET    | `/api/templates`                        | 🟡 legacy — sigue activo     | usar `/api/catalog` |
-| POST   | `/api/chat`                             | 🟡 legacy (grafo viejo, SSE) | será reemplazado en Fase 3 |
-| POST   | `/api/submit_input`                     | 🟡 legacy (grafo viejo, SSE) | será reemplazado en Fase 3 |
-| GET    | `/api/sessions/{session_id}/history`    | 🟡 legacy (grafo viejo)      | TBD — depende de cómo quede el flujo Fase 3 |
+| POST   | `/api/run`                              | ✅ estable (v1.0)             | reemplaza `/api/chat` + `/api/submit_input` |
+| GET    | `/api/catalog`                          | ✅ estable (v1.0)             | reemplaza `/api/templates` |
+| GET    | `/api/catalog/{id}`                     | ✅ estable (v1.0)             | sin equivalente legacy |
+| GET    | `/api/templates`                        | 🔴 deprecated — removal Fase 4 | usar `/api/catalog` |
+| POST   | `/api/chat`                             | 🔴 deprecated — removal Fase 4 | usar `/api/run` |
+| POST   | `/api/submit_input`                     | 🔴 deprecated — removal Fase 4 | usar `/api/run` |
+| GET    | `/api/sessions/{session_id}/history`    | 🔴 deprecated — removal Fase 4 | sin sucesor (el nuevo flujo no tiene estado de sesión) |
 
-> 🟢 = nuevo y estable, 🟡 = legacy mantenido para no bloquearte, 🔴 = a remover.
-> Mientras un endpoint esté en 🟡 lo dejamos andando — no hace falta migrar el frontend de golpe.
+> ✅ = estable, parte del contrato a largo plazo.
+> 🔴 = se borra en Fase 4. Mientras tanto sigue funcionando, pero las responses traen los headers `Deprecation: true` y `Sunset: Phase 4` (RFC 8594) como aviso. El header `Link` apunta al sucesor.
 
 ---
 
@@ -186,7 +189,91 @@ Devuelve el manifest completo de un conector. Se usa cuando el usuario hace clic
 
 ---
 
-### 3.3 Mapping de tipos: BigQuery → frontend `FieldType`
+### 3.3 `POST /api/run`
+
+Ejecuta el pipeline determinístico de ingesta para un manifest dado, en una sola llamada **sincrónica** (sin SSE, sin estado de sesión). Es el entrypoint estable que reemplaza a `/api/chat` + `/api/submit_input` (que tenían que tomarse varias llamadas + streaming SSE + UI triggers para llegar al mismo resultado).
+
+**Request body:**
+
+```json
+{
+  "manifest_id": "meta_facebook_ad_insights",
+  "params": {
+    "fields": ["account_id", "campaign_name", "spend"],
+    "days_back": 7
+  }
+}
+```
+
+| Campo         | Tipo                  | Notas |
+|---------------|-----------------------|-------|
+| `manifest_id` | `string` (snake_case) | Id del manifest, tal como aparece en `GET /api/catalog`. |
+| `params`      | `object`              | Parámetros del conector. Debe incluir `fields` (lista de nombres de `available_fields` seleccionables; lista vacía = "todos los selectables"). Las otras keys tienen que matchear el `params` del manifest (validado contra los grupos `required` + `optional` + `one_of`). |
+
+**Response 200 (OK o WARN):**
+
+Body con el shape de `formatted_response` que produce el nodo `format_response`:
+
+```json
+{
+  "manifest_id": "meta_facebook_ad_insights",
+  "tenant_id": "dev",
+  "target_table": "bronze.meta_facebook_ad_insights",
+  "ddl": "CREATE TABLE `bronze.meta_facebook_ad_insights` (...)",
+  "columns": ["account_id", "campaign_name", "spend"],
+  "row_count": 3,
+  "rows_preview": [
+    {"account_id": "act_123", "campaign_name": "Brand", "spend": 12.5}
+  ],
+  "meta": {"...": "..."},
+  "errors": [],
+  "diagnostics": {"...": "..."}
+}
+```
+
+| Campo         | Tipo                       | Notas |
+|---------------|----------------------------|-------|
+| `manifest_id` | `string`                   | Eco del request. |
+| `tenant_id`   | `string`                   | Tenant resuelto. En Fase 3 está hardcodeado a `"dev"`. En Fase 5 viene del header `X-Tenant-Id`. |
+| `target_table`| `string`                   | Tabla destino en BigQuery, con tokens del `bronze_pattern` ya sustituidos. **MVP**: no se ejecuta el insert aún — eso queda para Fase 5. |
+| `ddl`         | `string`                   | DDL `CREATE TABLE` determinístico generado por `Manifest.to_ddl()`. Mismo contrato que ya usabas en `SchemaApproval.ddl`. |
+| `columns`     | `string[]`                 | Subset solicitado (o todos los selectables si pasaste `fields: []`). |
+| `row_count`   | `integer`                  | Total de records traídos. |
+| `rows_preview`| `object[]`                 | Primeras 25 filas para preview (configurable en el backend; estable en 25 por ahora). |
+| `meta`        | `object`                   | Metadata cruda del conector (`pagination`, `total_count`, etc.). |
+| `errors`      | `string[]`                 | Errores no-fatales reportados por el conector. Vacío si todo OK. **En WARN, acá vas a ver el motivo** (ej. `rate_limited_partial`). |
+| `diagnostics` | `object`                   | Telemetría adicional (timings, retries, paginación). |
+
+**Response 4xx / 5xx (envelope uniforme):**
+
+```json
+{
+  "error":      "validation_failed" | "connector_failed" | "internal" | "pipeline_failed" | "no_formatted_response",
+  "request_id": "8c4f...",
+  "node":       "request_validator" | "connector_runner",
+  "reason":     "single-line summary",
+  "details":    ["error 1", "error 2"]
+}
+```
+
+**Status codes:**
+
+| Code | Cuándo                                                                                              | `error`              |
+|------|-----------------------------------------------------------------------------------------------------|----------------------|
+| 200  | Pipeline terminó OK o WARN.                                                                         | (no aplica — body es el shape de éxito) |
+| 400  | `request_validator` falló: faltan params, formato inválido, manifest_id desconocido, grupo `one_of` no satisfecho. | `validation_failed`  |
+| 422  | El JSON del body no parsea contra el shape mínimo de `RunRequest` (FastAPI/Pydantic lo intercepta antes del handler). | (formato Pydantic estándar) |
+| 502  | El conector falló (api unreachable, upstream 5xx, `status=error` reportado por el conector).        | `connector_failed`   |
+| 500  | Error inesperado del pipeline (DDL falló, excepción no manejada, no se produjo `formatted_response`). | `internal` / `pipeline_failed` / `no_formatted_response` |
+
+**Headers de toda response:**
+
+- `X-Request-Id`: uuid4 generado en cada request, para tracing. **Loguéalo en el frontend** cuando muestres un error — facilita mucho debug.
+- `Content-Type: application/json`.
+
+**Idempotencia y reintentos:** `/api/run` no escribe a BigQuery en Fase 3, así que reintentar es seguro. Cuando habilitemos write en Fase 5 vamos a agregar un `request_id` idempotente que el cliente puede pasar para evitar dobles inserts (te aviso por este doc cuando llegue).
+
+### 3.4 Mapping de tipos: BigQuery → frontend `FieldType`
 
 El manifest expone tipos crudos de BigQuery (porque el backend los usa para emitir DDL). Tu `FieldType` actual en `frontend/src/lib/platforms/types.ts` es un set más chico. Mapeo recomendado:
 
@@ -205,11 +292,23 @@ Si te conviene, te mando un helper `bigqueryTypeToFieldType(t: string): FieldTyp
 
 ---
 
-## 4. Endpoints legacy (siguen activos)
+## 4. Endpoints deprecated (removal en Fase 4)
 
-Estos sirven al grafo multi-agente actual. Nada los va a apagar de golpe — el plan es que `/api/chat` y `/api/submit_input` queden detrás del grafo determinístico nuevo en Fase 3, manteniendo el mismo shape SSE en lo posible. Si tenemos que cambiar el shape, te aviso con tiempo y dejamos una flag `MDS_USE_LEGACY_GRAPH=1` para roll-back inmediato.
+Estos endpoints siguen sirviendo al grafo multi-agente viejo. **Se borran completos en Fase 4** (junto con el código de los agentes LLM). Mientras tanto siguen funcionando para que tengas tiempo de migrar el frontend a `/api/run`.
 
-### 4.1 `GET /api/templates` (legacy)
+Todos exponen los headers advisory:
+
+```
+Deprecation: true
+Sunset: Phase 4
+Link: </api/run>; rel="successor-version"
+```
+
+(`/api/templates` apunta a `/api/catalog` en su `Link`.) Estos headers son aviso, no bloquean nada — el endpoint sigue respondiendo normal.
+
+> **Por qué los borramos:** el grafo nuevo es sincrónico, determinístico y sin estado de sesión. No hay equivalente directo entre "SSE con `ui_trigger`" del viejo y "JSON sync" del nuevo. La forma cómoda de migrar es: una llamada `/api/run` por intento; si necesitás "pedirle al usuario que elija columnas antes", hacés ese flow en el cliente (con `GET /api/catalog/{id}` para los `available_fields`) y después llamás `/api/run` con los `fields` ya elegidos.
+
+### 4.1 `GET /api/templates` (deprecated)
 
 Devuelve un set hardcoded de templates de paid media:
 
@@ -223,9 +322,7 @@ Devuelve un set hardcoded de templates de paid media:
 }
 ```
 
-Lo dejamos prendido para no romper nada. Cuando muevas el listing del frontend a `/api/catalog`, podés borrarlo del backend en un PR aparte.
-
-### 4.2 `POST /api/chat` (legacy, SSE)
+### 4.2 `POST /api/chat` (deprecated, SSE)
 
 Arranca un turno del grafo viejo.
 
@@ -296,7 +393,7 @@ X-Accel-Buffering: no
   {"available_fields": ["account_id", "campaign_name", ...]}
   ```
 
-### 4.3 `POST /api/submit_input` (legacy, SSE)
+### 4.3 `POST /api/submit_input` (deprecated, SSE)
 
 Reanuda el grafo viejo después de un input humano (selección de columnas, aprobación de schema, etc).
 
@@ -313,7 +410,7 @@ Si pasás un dict, el backend prioriza `message` → `text` → `user_message` p
 
 **Response:** mismo formato SSE que `/api/chat`.
 
-### 4.4 `GET /api/sessions/{session_id}/history` (legacy)
+### 4.4 `GET /api/sessions/{session_id}/history` (deprecated)
 
 Devuelve el state checkpointeado de un thread sin correr el grafo.
 
@@ -344,9 +441,9 @@ Devuelve el state checkpointeado de un thread sin correr el grafo.
 |------|---------|-------------------|
 | **0** ✅ | Submodule + scaffolding | Sin cambios en la API. |
 | **1** ✅ | Manifest loader + catálogo | **Nuevos:** `GET /api/catalog`, `GET /api/catalog/{id}`. |
-| **2** | Nodos determinísticos + grafo nuevo en paralelo | Sin cambios públicos en la API todavía. El nuevo grafo se prueba con `LocalBackend` adentro. |
-| **3** | Switch del entrypoint | `/api/chat` y `/api/submit_input` empiezan a invocar el grafo nuevo. **Intentamos no cambiar la shape** (mismos eventos SSE: `connection`/`progress`/`error`/`final`). Si algo cambia, lo documento acá y dejamos `MDS_USE_LEGACY_GRAPH=1` para rollback. |
-| **4** | Borrado del legacy | `/api/templates` queda candidato a borrar (ya tenés `/api/catalog`). Si en ese momento el frontend todavía lo usa, lo dejamos hasta que migres. |
+| **2** ✅ | Nodos determinísticos + grafo nuevo en paralelo | Sin cambios públicos en la API todavía. El nuevo grafo se prueba con `LocalBackend` adentro. |
+| **3** ✅ | Entrypoint determinístico | **Nuevo:** `POST /api/run` (sync JSON). **Deprecated** (con headers RFC 8594): `/api/chat`, `/api/submit_input`, `/api/templates`, `/api/sessions/{id}/history`. Los deprecated siguen funcionando hasta Fase 4. tenant_id hardcodeado a `"dev"`; se reemplaza por header `X-Tenant-Id` en Fase 5. |
+| **4** | Borrado del legacy | Se borran `/api/chat`, `/api/submit_input`, `/api/templates`, `/api/sessions/{id}/history` del backend + el código de los agentes LLM. **Único endpoint POST de ingesta a partir de acá: `/api/run`.** |
 | **5** | HTTPBackend + Cloud Functions en producción | Sin cambios en la API frontend-facing. Cambios internos: el dispatcher empieza a invocar Cloud Functions del cliente con SA impersonation. Para el frontend es transparente. |
 | **6** | Resto de conectores (IG, Google Ads, DV360) | El catálogo crece automáticamente — vas a ver más entries en `/api/catalog`. Sin cambios estructurales. |
 | **7** | Limpieza final | Doc final del flujo "agregar conector nuevo" en `connectors-library/CONTRIBUTING.md`. |
@@ -367,4 +464,5 @@ Cuando algo de esto cambie, edito este doc + te aviso.
 
 ## 7. Changelog
 
+- **2026-05-11 (Fase 3 ✅)** — Nuevo endpoint estable `POST /api/run` (sync JSON, sin SSE, sin estado de sesión). Marcamos `/api/chat`, `/api/submit_input`, `/api/templates` y `/api/sessions/{id}/history` como **deprecated** con headers RFC 8594 (`Deprecation`, `Sunset: Phase 4`, `Link` al sucesor). Los deprecated siguen funcionando hasta el borrado en Fase 4. Se descartó el flag `MDS_USE_LEGACY_GRAPH` previsto en la doc anterior — separamos por endpoint, no por flag, para hacer el borrado de Fase 4 más limpio.
 - **2026-05-08** — Doc inicial. Endpoints estables: `/api/catalog`, `/api/catalog/{id}` (Fase 1). Documentados también los endpoints legacy del grafo viejo. Mapping BigQuery → `FieldType` propuesto.

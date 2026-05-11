@@ -1,5 +1,5 @@
 """
-FastAPI HTTP surface for the LangGraph / PydanticAI platform.
+FastAPI HTTP surface for the MDS ingestion platform.
 
 Run from the `src/` directory (so `main` and sibling packages resolve):
 
@@ -8,24 +8,45 @@ Run from the `src/` directory (so `main` and sibling packages resolve):
 After `cd src`, use `api:app` only — not `src.api:app` (that needs the repo root on PYTHONPATH with `src` as a package).
 
 `RUN_MODE=api` ensures coordinator tools emit structured payloads instead of blocking on stdin.
-Startup runs `init_graph_async()` to attach an AsyncSqliteSaver checkpointer (`checkpoints.db` at repo root).
+Startup runs `init_graph_async()` to attach an AsyncSqliteSaver checkpointer (`checkpoints.db` at repo root)
+for the **legacy** multi-agent graph used by ``/api/chat`` and ``/api/submit_input``.
 
-Streaming POST endpoints use Server-Sent Events (`text/event-stream`): each event is `data: <json>\\n\\n`.
-GET `/api/templates` and `/api/sessions/{session_id}/history` support the frontend without running the graph.
+Stable endpoints (Phase 3+)
+---------------------------
+* ``GET  /api/catalog``                  — connector catalog (Phase 1)
+* ``GET  /api/catalog/{id}``             — connector manifest (Phase 1)
+* ``POST /api/run``                      — deterministic ingestion run (Phase 3), sync JSON
+                                            response. Status 200 on OK/WARN, 400 on validation
+                                            error, 502 on connector failure, 500 on
+                                            unexpected error. Every response carries an
+                                            ``X-Request-Id`` header for tracing.
+
+Deprecated endpoints (removal in Phase 4)
+-----------------------------------------
+The following endpoints back the legacy multi-agent LLM graph and will be deleted
+together with the agent code in Phase 4. Responses include ``Deprecation: true``
+and ``Sunset: Phase 4`` headers as advisory hints.
+
+* ``POST /api/chat``                     — legacy SSE turn (multi-agent graph)
+* ``POST /api/submit_input``             — legacy SSE follow-up
+* ``GET  /api/templates``                — replaced by ``/api/catalog``
+* ``GET  /api/sessions/{id}/history``    — legacy checkpoint snapshot
 """
 
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, Union
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from ingestion import build_graph
 from ingestion.manifest import (
     CATALOG_API_VERSION,
     ManifestValidationError,
@@ -40,7 +61,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="Ingestion Agent API", version="1.1.0", lifespan=lifespan)
+app = FastAPI(title="MDS API", version="1.2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -62,6 +83,48 @@ class SubmitRequest(BaseModel):
         ...,
         description="Human follow-up as plain text or structured dict (keys: message, text, user_message)",
     )
+
+
+class RunRequest(BaseModel):
+    """Request body for ``POST /api/run`` (deterministic ingestion).
+
+    Maps 1:1 to the inputs of :class:`ingestion.state.IngestionState`. The
+    catalog of valid ``manifest_id`` values is served by ``GET /api/catalog``;
+    the valid keys for ``params`` (including the ``one_of`` constraints and
+    the required ``fields`` entry) are documented per manifest in
+    ``GET /api/catalog/{id}``.
+    """
+
+    manifest_id: str = Field(
+        ...,
+        min_length=1,
+        description="Globally unique manifest id as exposed by GET /api/catalog.",
+    )
+    params: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Connector parameters. Must include 'fields' (list of selectable "
+            "available_fields names; empty list means 'all selectable'). "
+            "Other keys must match the manifest's params schema."
+        ),
+    )
+
+
+def _legacy_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Headers for legacy endpoints scheduled for removal in Phase 4.
+
+    Uses the IETF ``Deprecation`` advisory header (RFC 8594) with an
+    informational ``Sunset`` marker. Frontend can read these to surface
+    a migration warning to engineers; nothing breaks on their absence.
+    """
+    headers = {
+        "Deprecation": "true",
+        "Sunset": "Phase 4",
+        "Link": '</api/run>; rel="successor-version"',
+    }
+    if extra:
+        headers.update(extra)
+    return headers
 
 
 def _initial_turn_state(user_query: str) -> dict:
@@ -94,11 +157,14 @@ def _normalize_submit_user_input(user_input: Union[str, dict[str, Any]]) -> str:
 
 
 def _sse_headers() -> dict[str, str]:
-    return {
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-        "X-Accel-Buffering": "no",
-    }
+    """SSE headers for legacy multi-agent endpoints. Deprecated as of Phase 3."""
+    return _legacy_headers(
+        {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
 
 
 def _field_strs_from_api_spec(artifacts: dict[str, Any]) -> list[str]:
@@ -314,8 +380,144 @@ async def _sse_graph_stream(*, session_id: str, input_state: dict) -> AsyncItera
     yield f"data: {json.dumps(final_payload)}\n\n"
 
 
+# ---------------------------------------------------------------------------
+# Stable endpoint: deterministic ingestion run (Phase 3).
+# ---------------------------------------------------------------------------
+
+# Hardcoded tenant for Phase 3. Phase 5 replaces this with a real resolver
+# (header X-Tenant-Id + Secret Manager + SA impersonation).
+_PHASE3_TENANT_ID = "dev"
+
+# Mapping from failing-node id → HTTP status + error key. Keeps the handler
+# branchless and makes it trivial to add new failure modes (e.g. ``"data_architect"``)
+# in later phases without touching the handler body.
+_ERR_NODE_TO_HTTP: dict[str, tuple[int, str]] = {
+    "request_validator": (400, "validation_failed"),
+    "connector_runner": (502, "connector_failed"),
+}
+
+
+def _error_response(
+    *,
+    request_id: str,
+    status_code: int,
+    error_key: str,
+    node: str | None = None,
+    reason: str | None = None,
+    details: list[str] | None = None,
+) -> JSONResponse:
+    """Uniform error envelope. ``X-Request-Id`` is the trace key for the run."""
+    payload: dict[str, Any] = {
+        "error": error_key,
+        "request_id": request_id,
+    }
+    if node:
+        payload["node"] = node
+    if reason:
+        payload["reason"] = reason
+    if details:
+        payload["details"] = details
+    return JSONResponse(
+        status_code=status_code,
+        content=payload,
+        headers={"X-Request-Id": request_id},
+    )
+
+
+@app.post("/api/run")
+async def run_ingestion(request: RunRequest) -> JSONResponse:
+    """Run the deterministic ingestion pipeline for a single manifest.
+
+    Status codes
+    ------------
+    * ``200`` — pipeline completed (status ``OK`` or ``WARN``). The body is
+      the frontend-ready shape produced by ``format_response``.
+    * ``400`` — the request did not pass ``request_validator`` (missing or
+      malformed params/fields). Body: ``{error, request_id, node, reason, details}``.
+    * ``502`` — the connector itself failed (network error, upstream API
+      down, partial-but-flagged-as-error). Body: same envelope.
+    * ``500`` — unexpected pipeline error (e.g. DDL generation failed,
+      runtime exception inside a node). Body: same envelope.
+
+    Every response carries an ``X-Request-Id`` header (uuid4) for tracing.
+    """
+    request_id = str(uuid.uuid4())
+
+    initial_state: dict[str, Any] = {
+        "manifest_id": request.manifest_id,
+        "params": request.params,
+        "tenant_id": _PHASE3_TENANT_ID,
+        "node_results": [],
+        "obs_usages": [],
+    }
+
+    try:
+        # ``build_graph`` is cheap (no I/O, no compilation cache mutation) so
+        # constructing per-request keeps tests deterministic and avoids a
+        # global stateful instance during the Phase 3 rollout. A single
+        # compiled instance can be wired later if profiling demands it.
+        graph = build_graph()
+        final = await graph.ainvoke(initial_state)
+    except Exception as exc:
+        return _error_response(
+            request_id=request_id,
+            status_code=500,
+            error_key="internal",
+            reason=str(exc) or exc.__class__.__name__,
+        )
+
+    last_status = final.get("last_status")
+    node_results = final.get("node_results") or []
+
+    if last_status == "ERR":
+        last = node_results[-1] if node_results else None
+        if last is None:
+            return _error_response(
+                request_id=request_id,
+                status_code=500,
+                error_key="pipeline_failed",
+                reason=final.get("final_error") or "no node results recorded",
+            )
+        node_id = str(last.get("node", "") or "")
+        status_code, error_key = _ERR_NODE_TO_HTTP.get(
+            node_id, (500, "pipeline_failed")
+        )
+        return _error_response(
+            request_id=request_id,
+            status_code=status_code,
+            error_key=error_key,
+            node=node_id or None,
+            reason=str(last.get("reason") or final.get("final_error") or ""),
+            details=[str(e) for e in (last.get("errors") or [])],
+        )
+
+    formatted = final.get("formatted_response")
+    if formatted is None:
+        return _error_response(
+            request_id=request_id,
+            status_code=500,
+            error_key="no_formatted_response",
+            reason="graph terminated without producing formatted_response",
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=formatted,
+        headers={"X-Request-Id": request_id},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Deprecated endpoints (legacy multi-agent graph). Scheduled for removal in
+# Phase 4 together with the agent source code. Responses carry advisory
+# ``Deprecation`` / ``Sunset`` headers (RFC 8594) pointing at ``/api/run`` as
+# the successor.
+# ---------------------------------------------------------------------------
+
+
 @app.post("/api/chat")
 async def chat(request: ChatRequest) -> StreamingResponse:
+    """**Deprecated** (Phase 4 removal). Legacy multi-agent SSE turn."""
     graph = get_compiled_graph()
     config = {"configurable": {"thread_id": request.session_id}}
     try:
@@ -334,6 +536,7 @@ async def chat(request: ChatRequest) -> StreamingResponse:
 
 @app.post("/api/submit_input")
 async def submit_input(request: SubmitRequest) -> StreamingResponse:
+    """**Deprecated** (Phase 4 removal). Legacy multi-agent SSE follow-up."""
     text = _normalize_submit_user_input(request.user_input)
     if not text:
         raise HTTPException(status_code=400, detail="user_input is empty after normalization")
@@ -346,15 +549,22 @@ async def submit_input(request: SubmitRequest) -> StreamingResponse:
 
 
 @app.get("/api/templates")
-async def get_templates() -> dict[str, Any]:
-    """MVP catalog of connector templates aligned with paid-media skills (frontend picker)."""
-    return {
-        "templates": [
-            {"id": "tiktok", "name": "TikTok Ads", "category": "Paid Media", "status": "active"},
-            {"id": "meta", "name": "Meta Ads", "category": "Paid Media", "status": "active"},
-            {"id": "google-ads", "name": "Google Ads", "category": "Paid Media", "status": "active"},
-        ]
-    }
+async def get_templates() -> JSONResponse:
+    """**Deprecated** (Phase 4 removal). Use ``GET /api/catalog`` instead.
+
+    Returns a hardcoded MVP list of paid-media templates. The replacement
+    ``/api/catalog`` reads real manifests from the connectors-library submodule.
+    """
+    return JSONResponse(
+        content={
+            "templates": [
+                {"id": "tiktok", "name": "TikTok Ads", "category": "Paid Media", "status": "active"},
+                {"id": "meta", "name": "Meta Ads", "category": "Paid Media", "status": "active"},
+                {"id": "google-ads", "name": "Google Ads", "category": "Paid Media", "status": "active"},
+            ]
+        },
+        headers=_legacy_headers({"Link": '</api/catalog>; rel="successor-version"'}),
+    )
 
 
 @app.get("/api/catalog")
@@ -422,8 +632,13 @@ async def get_catalog_entry(manifest_id: str) -> dict[str, Any]:
 
 
 @app.get("/api/sessions/{session_id}/history")
-async def get_session_history(session_id: str) -> dict[str, Any]:
-    """Return checkpointed state for a thread without running the graph."""
+async def get_session_history(session_id: str) -> JSONResponse:
+    """**Deprecated** (Phase 4 removal). Legacy checkpoint snapshot.
+
+    The deterministic ``/api/run`` is request/response (no thread state),
+    so this endpoint has no successor — it is retained only while the
+    legacy ``/api/chat`` flow is still wired.
+    """
     graph = get_compiled_graph()
     config = {"configurable": {"thread_id": session_id}}
     snapshot = None
@@ -439,10 +654,13 @@ async def get_session_history(session_id: str) -> dict[str, Any]:
     next_nodes = getattr(snapshot, "next", None) if snapshot is not None else None
     is_paused = bool(next_nodes) if next_nodes is not None else False
 
-    return {
-        "session_id": session_id,
-        "conversation_context": values.get("conversation_context", []),
-        "event_bus": values.get("event_bus", []),
-        "artifacts": values.get("artifacts", {}),
-        "is_paused": is_paused,
-    }
+    return JSONResponse(
+        content={
+            "session_id": session_id,
+            "conversation_context": values.get("conversation_context", []),
+            "event_bus": values.get("event_bus", []),
+            "artifacts": values.get("artifacts", {}),
+            "is_paused": is_paused,
+        },
+        headers=_legacy_headers(),
+    )

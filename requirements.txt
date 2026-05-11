@@ -28,3 +28,7 @@ pydantic-ai-skills>=0.5.1
 # Manifest validation (Phase 1: connector catalog).
 # Draft 2020-12 support landed in jsonschema >=4.18.
 jsonschema>=4.20
+
+# Phase 3: FastAPI TestClient (for src/ingestion/tests/test_api_run.py).
+# Starlette ships TestClient but requires httpx at runtime.
+httpx>=0.27

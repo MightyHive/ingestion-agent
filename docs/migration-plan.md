@@ -211,26 +211,45 @@ main ─────────────────────────
 
 ---
 
-## Fase 3 — Switch del entrypoint público
+## Fase 3 — Entrypoint determinístico público
 
-**Objetivo:** redirigir el tráfico real al grafo nuevo. Punto de no retorno operacional, pero el código viejo sigue en el repo.
+**Objetivo:** introducir `POST /api/run` como el endpoint estable que ejecuta el grafo determinístico de Fase 2, marcando los endpoints del grafo viejo como deprecated (con headers RFC 8594) para borrarlos en Fase 4.
+
+**Estado:** ✅ completa (2026-05-11, commit pendiente en `setup-mds-phase3.sh`).
+
+### Decisión de diseño (refinada respecto del plan original)
+
+El plan original preveía un único `/api/run` con flag `MDS_USE_LEGACY_GRAPH` para rollback. Se descartó:
+
+- Ivan confirmó que el grafo viejo no se va a volver a usar — la red de seguridad del flag agregaba complejidad sin necesidad real.
+- Mili confirmó que adapta el frontend al contrato nuevo (no hay que mantener el shape SSE).
+- Separar por endpoint (no por flag) deja el borrado de Fase 4 trivial: se borra el handler completo en vez de tener que cazar lógica condicional regada.
+
+Resultado: `POST /api/run` es **un endpoint nuevo y limpio**, sync JSON. Los SSE viejos siguen en su URL hasta Fase 4, anotados como deprecated.
 
 ### Tareas
 
-- [ ] En `src/api.py`, cambiar el handler de `/api/run` para invocar `src/ingestion/graph.py`.
-- [ ] Mantener una flag `MDS_USE_LEGACY_GRAPH=1` que permita volver al viejo si algo explota en staging.
-- [ ] Smoke test manual desde el frontend: pedir Facebook insights, verificar que viene la respuesta correcta.
-- [ ] Observability: confirmar que las trazas del grafo nuevo aparecen y que el `checkpoints.db` se sigue poblando.
+- [x] Nuevo endpoint `POST /api/run` en `src/api.py` con shape: status 200 (OK/WARN), 400 (`validation_failed`), 502 (`connector_failed`), 500 (`internal`/`pipeline_failed`/`no_formatted_response`); header `X-Request-Id` (uuid4) en toda respuesta.
+- [x] Mapping determinístico `failing_node → (status_code, error_key)` (`request_validator → 400`, `connector_runner → 502`) — helper `_error_response` con envelope uniforme.
+- [x] `RunRequest` Pydantic: `manifest_id` (string, min_length=1) + `params` (dict, default vacío). Mapea 1:1 al `IngestionState` input.
+- [x] tenant_id hardcodeado a `"dev"` (`_PHASE3_TENANT_ID`). Phase 5 lo reemplaza por resolver real.
+- [x] Endpoints legacy (`/api/chat`, `/api/submit_input`, `/api/templates`, `/api/sessions/{id}/history`) marcados con headers RFC 8594 (`Deprecation: true`, `Sunset: Phase 4`, `Link: </api/run>; rel="successor-version"` o `</api/catalog>` para `/api/templates`). Helper `_legacy_headers`. Docstrings actualizados.
+- [x] Tests `src/ingestion/tests/test_api_run.py` con FastAPI `TestClient`: 200 OK, 200 WARN (partial), 400 validation, 400 unknown manifest, 502 connector error, 422 body inválido, headers de deprecation en legacy. El `main` viejo se stubea con `sys.modules` para evitar bootear el grafo LLM durante tests.
+- [x] `httpx>=0.27` agregado a `requirements.txt` (lo necesita FastAPI `TestClient`).
+- [x] `docs/api.md` actualizado con la nueva sección 3.3 (`/api/run`), tabla del mapa de endpoints, sección 4 reescrita como "deprecated removal Fase 4", roadmap (sección 5) marcado Fase 2 y 3 ✅, changelog entry 2026-05-11.
 
 ### Criterios de "done"
 
-- En staging, el flujo de ingesta de Facebook funciona vía el grafo nuevo.
-- `MDS_USE_LEGACY_GRAPH=1` permite roll-back instantáneo.
-- No hay diferencias funcionales para el usuario.
+- ✅ `POST /api/run` ejecuta el grafo determinístico de Fase 2 y devuelve un JSON sync (sin SSE).
+- ✅ Tests E2E del endpoint pasan contra el mock_connector fixture (sin red, sin LLM, sin BQ).
+- ✅ Endpoints viejos siguen funcionando pero exponen los headers advisory de deprecation.
+- ✅ `docs/api.md` documenta el contrato exacto para Mili (request body, response shapes, status codes, headers).
 
 ### Riesgos
 
-- Diferencias sutiles en el shape de la respuesta entre grafos. Mitigación: capturar respuestas del grafo viejo antes del switch como fixtures y comparar.
+- ~~Diferencias sutiles en el shape de la respuesta entre grafos.~~ **Mitigado:** ya no intentamos compatibilidad — el nuevo shape es JSON sync limpio, documentado en `docs/api.md` §3.3. Mili adapta el frontend cuando esté lista.
+- ~~`MDS_USE_LEGACY_GRAPH` mal configurado en producción.~~ **Mitigado:** no hay flag — la separación por endpoint elimina la clase de bug por completo.
+- **Nuevo riesgo:** un cliente del frontend antiguo sigue golpeando `/api/chat` y no se da cuenta del header `Deprecation`. Mitigación: el header es solo advisory; el endpoint sigue funcionando hasta Fase 4. Antes de Fase 4 verificamos que los logs muestren tráfico cero en `/api/chat` y `/api/submit_input`.
 
 ---
 
