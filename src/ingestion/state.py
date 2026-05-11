@@ -1,0 +1,126 @@
+"""IngestionState — TypedDict for the deterministic ingestion graph.
+
+The new graph is intentionally **decoupled** from
+``shared/state.py::AgentGraphState`` (which carries the legacy
+multi-agent fan-out semantics). Mixing them would force the new pipeline
+to reason about coordinator/synthesizer fields that are irrelevant.
+
+Lifecycle of a typical run::
+
+    INPUT  → request_validator
+           → data_architect      (DDL preview)
+           → connector_runner    (invokes Cloud Function / local module)
+           → format_response     (frontend-ready shape)
+           → END
+
+Any node returning a ``NodeLOL`` with ``status='ERR'`` short-circuits to
+``END``. The graph router checks ``state['last_status']`` to decide.
+
+See ``docs/architecture.md`` §4 (deterministic graph).
+"""
+
+from __future__ import annotations
+
+from operator import add
+from typing import Annotated, Any, Optional, TypedDict
+
+
+def _node_results_reducer(
+    current: list[dict], update: list[dict]
+) -> list[dict]:
+    """Append-only reducer for ``node_results``.
+
+    LangGraph applies the reducer between successive node updates. We
+    use append semantics so the trace preserves the full sequence of
+    LOL envelopes emitted during a run, in order.
+    """
+    if not update:
+        return list(current or [])
+    return list(current or []) + list(update)
+
+
+class IngestionState(TypedDict, total=False):
+    """State shared across deterministic ingestion nodes.
+
+    All keys are ``total=False`` so callers only need to populate the
+    inputs (``manifest_id``, ``params``, ``tenant_id``); the graph fills
+    in the rest as it progresses.
+
+    Inputs
+    ------
+    manifest_id:
+        Globally unique id of the connector manifest, as it appears in
+        ``GET /api/catalog``. Resolved against the local catalog by the
+        validator.
+    params:
+        Raw parameters from the API request body (``params`` field).
+        Validated and normalised by ``request_validator``.
+    tenant_id:
+        Multi-tenant identifier. Resolved by ``connector_runner`` via
+        :class:`src.ingestion.auth.tenant_context.TenantContext`. In
+        Phase 2 this is a stub that reads a local JSON file.
+
+    Intermediate state (set by nodes)
+    ---------------------------------
+    manifest:
+        Full validated manifest dict, set by ``request_validator``.
+    selected_fields:
+        Subset of ``manifest['available_fields']`` requested by the
+        caller (or all selectable fields if the param was empty).
+    normalised_params:
+        Params after defaulting and coercion. This is what
+        ``connector_runner`` passes to the dispatcher.
+    matched_one_of:
+        Which ``params.one_of`` group was matched (list of param names),
+        if any. Useful for trace clarity.
+    ddl:
+        BigQuery DDL produced by ``data_architect`` (Manifest.to_ddl).
+        Not yet executed against BigQuery in Phase 2 — only previewed.
+    target_table:
+        Resolved fully-qualified table name (e.g.
+        ``project.bronze.meta_facebook_ad_insights``). Filled by
+        ``data_architect`` after substituting ``bronze_pattern`` tokens.
+    connector_response:
+        Raw response from the connector (``status``, ``code``,
+        ``records``, ``meta``, ``errors``). Set by ``connector_runner``.
+    formatted_response:
+        Frontend-ready shape, set by ``format_response``. This is what
+        the API serialises back to the client.
+
+    Telemetry
+    ---------
+    node_results:
+        Append-only list of LOL envelopes emitted by every node during
+        the run. Drives observability and the API trace.
+    last_status:
+        Status of the most recent node (``OK`` / ``WARN`` / ``ERR``).
+        Used by the conditional router to decide whether to continue or
+        short-circuit to ``END``.
+    final_error:
+        When the graph ended in ERR, the reason string from the failing
+        node. Surfaced verbatim in the API error payload.
+    """
+
+    # Inputs
+    manifest_id: str
+    params: dict[str, Any]
+    tenant_id: str
+
+    # Intermediate (filled by nodes)
+    manifest: Optional[dict[str, Any]]
+    selected_fields: list[str]
+    normalised_params: dict[str, Any]
+    matched_one_of: Optional[list[str]]
+    ddl: Optional[str]
+    target_table: Optional[str]
+    connector_response: Optional[dict[str, Any]]
+    formatted_response: Optional[dict[str, Any]]
+
+    # Telemetry
+    node_results: Annotated[list[dict], _node_results_reducer]
+    obs_usages: Annotated[list[dict], add]
+    last_status: str
+    final_error: Optional[str]
+
+
+__all__ = ["IngestionState"]

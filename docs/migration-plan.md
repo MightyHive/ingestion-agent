@@ -181,26 +181,33 @@ main ─────────────────────────
 
 **Objetivo:** construir el grafo nuevo de ingesta sin desconectar el viejo. Ambos coexisten temporalmente.
 
+**Estado:** ✅ completa (2026-05-09). Pipeline `request_validator → data_architect → connector_runner → format_response → END` operativo end-to-end con `LocalBackend`. Coexiste con el grafo viejo (que aún sirve `/api/run`).
+
 ### Tareas
 
-- [ ] `src/ingestion/nodes/request_validator.py` — función pura, devuelve LOL OK con `(source, type, params, fields, tenant_id)` validado o ERR con detalle.
-- [ ] `src/ingestion/nodes/data_architect.py` — implementa `Manifest.to_ddl(manifest, selected_fields, tenant) -> str`. Sin LLM.
-- [ ] `src/ingestion/auth/tenant_context.py` — `TenantContext.resolve(tenant_id)` carga config del cliente. Stub inicial: lee de un YAML local en dev.
-- [ ] `src/ingestion/dispatcher/base.py` + `local.py` — `LocalBackend.invoke(manifest, params, ctx)` hace `importlib.import_module(manifest.endpoint.module_path)` y llama `module.fetch(params, context)`.
-- [ ] `src/ingestion/nodes/connector_runner.py` — usa `TenantContext` + `ConnectorDispatcher(runtime="local")` y devuelve LOL.
-- [ ] `src/ingestion/nodes/format_response.py` — formatea records al shape final que espera el frontend; en MVP **no escribe a BigQuery todavía**, solo devuelve el preview.
-- [ ] `src/ingestion/graph.py` — LangGraph: `request_validator → data_architect → connector_runner → format_response → END`. Reuse del router de self-correction del LOL Protocol.
-- [ ] Tests unitarios por nodo + un test end-to-end con LocalBackend contra el conector de Facebook (o un mock fixture).
+- [x] `src/ingestion/nodes/request_validator.py` — función pura `validate_request(manifest_id, params, tenant_id)` que devuelve `NodeLOL` OK con `(manifest, normalised_params, selected_fields, matched_one_of)` o ERR con detalle. Resuelve `one_of` con regla "exactamente un grupo completo".
+- [x] `src/ingestion/nodes/data_architect.py` — `to_ddl(manifest, selected_fields) -> (ddl, target_table, columns)`. Sin LLM. Soporta los 13 tipos de BigQuery, partitioning DAY/HOUR/MONTH/YEAR, clustering ≤4 fields, REQUIRED → `NOT NULL`, ARRAY/STRUCT recursivos, tokens del `bronze_pattern`.
+- [x] `src/ingestion/auth/tenant_context.py` — `TenantContext.resolve(tenant_id)` carga config del cliente desde JSON local (`~/.mds/tenants.json` o `MDS_TENANTS_FILE`). `assert_satisfies(required_keys)` valida `auth.context_required` del manifest. Hook `set_loader_for_testing` para overrides.
+- [x] `src/ingestion/dispatcher/base.py` + `local.py` — `LocalBackend.invoke(manifest, params, ctx)` hace `importlib.import_module(manifest.endpoint.module_path)` y llama `module.fetch(params, context)`. `ConnectorDispatcher` lee `MDS_RUNTIME` (default `local`); HTTP queda explícitamente diferido a Fase 5.
+- [x] `src/ingestion/nodes/connector_runner.py` — usa `TenantContext` + `ConnectorDispatcher` y devuelve `NodeLOL`. Mapea `status=partial` → WARN, `status=error` → ERR.
+- [x] `src/ingestion/nodes/format_response.py` — formatea records al shape final (`row_count`, `rows_preview` ≤25, `target_table`, `ddl`, `columns`, `meta`, `errors`, `diagnostics`). MVP **no escribe a BigQuery todavía**, solo devuelve el preview.
+- [x] `src/ingestion/graph.py` — LangGraph: `request_validator → data_architect → connector_runner → format_response → END` con conditional edges que cortan a END en `last_status="ERR"` (router determinístico, sin self-correction LLM).
+- [x] Tests unitarios por nodo + e2e con `LocalBackend` contra el mock connector fixture y validaciones de DDL contra el manifest real de Facebook. **41 tests pasando** en 0.09s.
 
 ### Criterios de "done"
 
-- `pytest src/ingestion/` pasa con un caso end-to-end Facebook → DDL + records.
-- El grafo viejo sigue siendo el que sirve a `/api/run` (todavía).
+- [x] `pytest src/ingestion/tests/` pasa: 41 tests verdes (validador, architect, tenant context, dispatcher, format response, e2e graph).
+- [x] E2E happy path: pipeline completa los 4 nodos, devuelve `target_table=bronze.test_mock_connector`, DDL con `id STRING`, `row_count=2`, `tenant_seen` echando el marker del tenant.
+- [x] E2E negativo: validación falla → grafo corta a END después del validador (1 nodo ejecutado, no 4).
+- [x] E2E partial: connector devuelve `status=partial` → runner emite WARN pero el grafo completa todos los nodos.
+- [x] Manifest real de Facebook genera DDL correcto: `PARTITION BY date_start`, `CLUSTER BY account_id, campaign_id`, `spend NUMERIC`, fields `selectable=false` incluidos.
+- [x] El grafo viejo sigue siendo el que sirve a `/api/run` (la Fase 3 hace el switch).
 
 ### Riesgos
 
-- Incongruencias entre lo que `Manifest.to_ddl()` produce y lo que BigQuery acepta. Mitigación: validar el DDL con el client de BQ en modo dry-run en el test.
-- `importlib` y el path del submodule. Asegurarse de que `connectors-library/` esté en el `sys.path` (vía `pyproject.toml` o setup explícito).
+- ~~Incongruencias entre lo que `to_ddl()` produce y lo que BigQuery acepta.~~ Mitigado: tests cubren los 13 tipos de BQ + ARRAY/STRUCT recursivos + REQUIRED → `NOT NULL`. Dry-run contra BQ se hará al deployar la primera CF en Fase 5.
+- ~~`importlib` y el path del submodule.~~ Mitigado: `LocalBackend` añade `connectors-library/` al `sys.path` idempotentemente y respeta `MDS_LOCAL_BACKEND_PATHS` para los tests con fixtures.
+- Acoplamiento con el shape exacto del `ConnectorResponse`: si los CFs reales emiten un shape distinto al contrato (`{status, code, records, meta, errors}`), `format_response` rompe. Mitigación: smoke test contra el conector de Facebook real apenas Fase 3 esté en staging.
 
 ---
 

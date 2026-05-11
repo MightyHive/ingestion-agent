@@ -1,0 +1,55 @@
+{
+  "id": "test_mock_connector",
+  "name": "Mock Connector for Tests",
+  "platform": "test",
+  "connector": "mock",
+  "version": "0.1.0",
+  "status": "alpha",
+  "description": "Fixture connector used by ingestion graph tests. Never reaches the network.",
+  "owner": "Ivan Krawchik",
+  "endpoint": {
+    "module_path": "mock_connector.fetcher",
+    "function_name": "fetch"
+  },
+  "auth": {
+    "context_required": ["tenant_marker"]
+  },
+  "params": {
+    "required": [
+      {
+        "name": "fields",
+        "type": "field_list",
+        "description": "Subset of available_fields the caller wants. Empty = all selectable."
+      }
+    ],
+    "optional": [
+      {
+        "name": "simulate_row_count",
+        "type": "integer",
+        "default": 3,
+        "minimum": 0,
+        "maximum": 100
+      },
+      {
+        "name": "simulate_status",
+        "type": "string",
+        "default": "ok",
+        "enum": ["ok", "partial", "error"]
+      },
+      {
+        "name": "simulate_errors",
+        "type": "array"
+      }
+    ]
+  },
+  "available_fields": [
+    {"name": "id", "type": "STRING", "description": "Synthetic row id."},
+    {"name": "label", "type": "STRING"},
+    {"name": "value", "type": "FLOAT64"},
+    {"name": "tenant_seen", "type": "STRING", "description": "Echoed tenant marker."}
+  ],
+  "table_naming": {
+    "bronze_pattern": "bronze.{id}",
+    "clustering_fields": ["id"]
+  }
+}
