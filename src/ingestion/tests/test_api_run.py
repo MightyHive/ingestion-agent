@@ -1,6 +1,6 @@
-"""End-to-end tests for ``POST /api/run`` (Phase 3).
+"""End-to-end tests for ``POST /api/run`` and the catalog endpoints (Phase 4).
 
-Exercises the FastAPI handler against the deterministic ingestion graph
+Exercises the FastAPI handlers against the deterministic ingestion graph
 running on the mock connector fixture. No network, no LLM, no real Cloud
 Function. We validate the HTTP contract documented in ``docs/api.md``:
 
@@ -8,17 +8,18 @@ Function. We validate the HTTP contract documented in ``docs/api.md``:
 * ``400`` on ``request_validator`` ERR.
 * ``502`` on ``connector_runner`` ERR.
 * Every response carries an ``X-Request-Id`` (uuid) header.
-* Deprecated endpoints expose the ``Deprecation`` / ``Sunset`` headers.
+* The legacy endpoints (``/api/chat``, ``/api/submit_input``,
+  ``/api/templates``, ``/api/sessions/{id}/history``) are gone and now
+  return ``404`` — the contract the frontend must rely on post-Phase 4.
 
-The ``main`` module is stubbed before ``api`` is imported because the real
-``main`` boots the legacy multi-agent graph (AsyncSqliteSaver, PydanticAI
-agents) which is irrelevant here and would slow tests down significantly.
+The lifespan hook that booted the legacy multi-agent graph
+(``AsyncSqliteSaver`` + PydanticAI agents) was removed in Phase 4, so this
+test no longer needs to stub a fake ``main`` module — ``api`` imports
+cleanly with zero side effects.
 """
 
 from __future__ import annotations
 
-import sys
-import types
 import uuid
 from pathlib import Path
 
@@ -70,34 +71,16 @@ def stub_tenant():
 
 
 @pytest.fixture
-def api_client(fixture_catalog, stub_tenant, monkeypatch: pytest.MonkeyPatch):
-    """Build a FastAPI TestClient with the legacy ``main`` module stubbed.
+def api_client(fixture_catalog, stub_tenant):
+    """Build a FastAPI TestClient against the Phase 4 ``api`` module.
 
-    The real ``main`` initialises the multi-agent graph + SQLite checkpointer
-    on app startup, which is unrelated to ``/api/run`` and slow. We replace
-    it in ``sys.modules`` before importing ``api`` so the lifespan hook is a
-    no-op and the legacy endpoints raise a clear error if accidentally hit.
+    Phase 4 removed the lifespan hook, the legacy ``main`` import and all
+    multi-agent endpoints, so this fixture is a thin wrapper around
+    ``TestClient(api.app)`` — no stubs, no monkeypatching of ``sys.modules``.
     """
-    fake_main = types.ModuleType("main")
-
-    async def _noop_init_graph_async() -> None:
-        return None
-
-    def _fail_get_compiled_graph():
-        raise RuntimeError(
-            "legacy multi-agent graph is not initialised in tests; "
-            "use POST /api/run instead"
-        )
-
-    fake_main.init_graph_async = _noop_init_graph_async
-    fake_main.get_compiled_graph = _fail_get_compiled_graph
-    monkeypatch.setitem(sys.modules, "main", fake_main)
-
-    # Force a re-import of api so it picks up the stubbed main.
-    sys.modules.pop("api", None)
     from fastapi.testclient import TestClient
 
-    import api as api_module  # noqa: WPS433 — local import is intentional
+    import api as api_module
 
     with TestClient(api_module.app) as client:
         yield client
@@ -244,29 +227,53 @@ def test_run_connector_error_returns_502(api_client) -> None:
 
 def test_run_empty_manifest_id_returns_422(api_client) -> None:
     """FastAPI/Pydantic intercepts an empty manifest_id with 422 before we
-    even reach the handler. We assert the contract so the frontend knows it."""
+    even reach the handler. A dedicated RequestValidationError exception
+    handler re-emits the 422 with our X-Request-Id header so the trace-id
+    contract from docs/api.md §3.3 holds for *every* response, not just
+    the ones our handler produced directly."""
     resp = api_client.post(
         "/api/run",
         json={"manifest_id": "", "params": {"fields": []}},
     )
     assert resp.status_code == 422
+    _assert_request_id(resp)
+    body = resp.json()
+    assert "detail" in body
+    assert body.get("request_id") == resp.headers.get("x-request-id")
 
 
 def test_run_missing_manifest_id_returns_422(api_client) -> None:
     resp = api_client.post("/api/run", json={"params": {"fields": []}})
     assert resp.status_code == 422
+    _assert_request_id(resp)
+    body = resp.json()
+    assert body.get("request_id") == resp.headers.get("x-request-id")
 
 
 # ---------------------------------------------------------------------------
-# Deprecated endpoints expose the advisory headers (Phase 4 sunset)
+# Removed legacy endpoints — must return 404 post-Phase 4
 # ---------------------------------------------------------------------------
+#
+# In Phase 3 these endpoints existed but carried RFC 8594 deprecation
+# headers. In Phase 4 the handlers (and the agent code behind them) were
+# deleted entirely. We assert 404 here so a regression that accidentally
+# re-introduces a handler is caught by CI.
 
 
-def test_templates_endpoint_carries_deprecation_headers(api_client) -> None:
-    resp = api_client.get("/api/templates")
-    assert resp.status_code == 200
-    assert resp.headers.get("deprecation") == "true"
-    assert resp.headers.get("sunset") == "Phase 4"
-    # Link header points at the replacement.
-    link = resp.headers.get("link", "")
-    assert "/api/catalog" in link and 'rel="successor-version"' in link
+@pytest.mark.parametrize(
+    "method, path, payload",
+    [
+        ("post", "/api/chat", {"session_id": "abc", "message": "hi"}),
+        ("post", "/api/submit_input", {"session_id": "abc", "user_input": "hi"}),
+        ("get", "/api/templates", None),
+        ("get", "/api/sessions/abc/history", None),
+    ],
+)
+def test_legacy_endpoints_return_404(api_client, method, path, payload) -> None:
+    if method == "post":
+        resp = api_client.post(path, json=payload)
+    else:
+        resp = api_client.get(path)
+    assert resp.status_code == 404, (
+        f"{method.upper()} {path} should be 404 post-Phase 4, got {resp.status_code}"
+    )

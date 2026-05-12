@@ -257,41 +257,49 @@ Resultado: `POST /api/run` es **un endpoint nuevo y limpio**, sync JSON. Los SSE
 
 **Objetivo:** PR atómico que elimina todo lo que ya no se usa.
 
+**Estado:** ✅ completa (2026-05-11, commit pendiente en `setup-mds-phase4.sh`).
+
+### Decisión revisada (al ejecutar)
+
+- El plan original preveía mantener el flag `MDS_USE_LEGACY_GRAPH` hasta Fase 3 para rollback operacional. En Fase 3 se descartó el flag por completo (separación por endpoint, no por flag), así que en Fase 4 no hay flag que borrar — los handlers viejos simplemente desaparecen.
+- Ivan y Facundo cerraron el cambio de dirección antes de Fase 4. El trabajo de Facundo (`b9b9f4f`, `427ab59`) queda preservado en el tag `legacy-mds-agents`. No hubo intención de portar nada a `shared/`.
+- Como el refactor vive en `new-mds-deterministic` (no se merge a `main` todavía), el borrado destructivo es seguro: producción sigue corriendo `main` (grafo viejo) hasta el PR final.
+
 ### Prerrequisito (bloqueante)
 
-- [ ] **Acordado con Facundo el cambio de dirección.** Su trabajo (`b9b9f4f`, `427ab59`: artifact store + temporal staging + prep multi-connector) se elimina como parte de este PR. La rama `legacy-mds-agents` debe estar creada y verificada antes de mergear.
+- [x] **Acordado con Facundo el cambio de dirección.** Su trabajo (`b9b9f4f`, `427ab59`: artifact store + temporal staging + prep multi-connector) se elimina como parte de este PR. La rama `legacy-mds-agents` queda creada y verificada antes de mergear.
 
 ### Tareas
 
-- [ ] Archivos a borrar:
-  - `src/agents/coordinator_agent.py`
-  - `src/agents/api_researcher_agent.py`
-  - `src/agents/data_architect_agent.py` (versión LLM)
-  - `src/agents/software_engineer_agent.py`
-  - `src/agents/synthesizer_agent.py`
-  - `src/agents/__init__.py` (queda vacío o se elimina)
-  - `src/connector_library/` (entero — el código generado por LLM, no el submodule `connectors-library/`)
-  - `src/pending_deploy/` (artifact store, agregado en commit `b9b9f4f` de Facundo)
-  - `src/main.py` (grafo viejo) — o se reduce a glue mínimo si `src/ingestion/graph.py` lo absorbe todo
+- [x] Archivos a borrar (vía `git rm -r` en el setup script, ejecutado en el Mac de Ivan):
+  - `src/agents/` (entero: `coordinator_agent.py`, `api_researcher_agent.py`, `data_architect_agent.py` LLM, `software_engineer_agent.py`, `synthesizer_agent.py`, `__init__.py`)
+  - `src/connector_library/` (entero — el código generado por LLM, no confundir con el submodule `connectors-library/`)
+  - `src/pending_deploy/` (artifact store de Facundo)
+  - `src/main.py` (grafo viejo + lifespan + `AsyncSqliteSaver`)
   - `src/agent_registry.py`
   - `src/synthesis_enrichment.py`
   - `src/skills/software-engineer-connector-manager/`
-  - `src/tools/` (revisar caso por caso — `software_engineer_tools.py` se va; lo que sirva al `warehouse_explorer` migra a `src/shared/`)
-- [ ] Eliminar la flag `MDS_USE_LEGACY_GRAPH` de `src/api.py`.
-- [ ] Eliminar dependencias del `requirements.txt` que solo servían a los agentes de ingesta (PydanticAI puede quedarse para `warehouse_explorer`).
-- [ ] Update del `README.md` raíz: descripción del repo (mds = Media Data Studio), link a los docs.
-- [ ] Verificar que `legacy-mds-agents` tiene todo lo que se borra (smoke: `git diff legacy-mds-agents new-mds-deterministic -- src/agents/ src/pending_deploy/ src/connector_library/` debería listar exactamente los archivos eliminados).
+  - `src/services/` (revisar caso por caso — todo lo que solo servía al SE-agent)
+  - `src/tools/` (`software_engineer_tools.py` se va; nada migra a `shared/` en esta fase)
+- [x] `src/api.py` reescrito: sin `lifespan`, sin import de `main`, sin `ChatRequest`/`SubmitRequest`, sin helpers SSE (`_sse_headers`, `_sse_graph_stream`), sin `_legacy_headers`, sin handlers de `/api/chat`, `/api/submit_input`, `/api/templates`, `/api/sessions/{id}/history`. Versión bumpeada a `2.0.0`. Solo quedan `RunRequest`, `_error_response`, `/api/run`, `/api/catalog`, `/api/catalog/{id}`.
+- [x] `src/ingestion/tests/test_api_run.py`: removido el stub de `main` en `sys.modules` (ya no hace falta — `api` importa limpio); agregados 4 tests parametrizados que verifican `404` para los endpoints viejos.
+- [x] `requirements.txt` purgado del stack LLM: removidas `aiosqlite`, `langgraph-checkpoint-sqlite`, `pydantic-ai-slim[*]`, `pydantic-ai-skills`, `google-generativeai`, `langchain-*`, `chromadb`, `python-dotenv`. Sobrevive: `fastapi`, `uvicorn[standard]`, `langgraph`, `pydantic`, `jsonschema`, `pytest`, `httpx`.
+- [x] `.gitignore` limpio: removidas reglas para `src/pending_deploy/*.py` y `chroma_db/`; agregadas `.pytest_cache/`, `/tmp/pytest-mds/`; bloque de SQLite leftover anotado como histórico.
+- [x] `docs/api.md` actualizado: sección 4 reescrita como "Endpoints eliminados en Fase 4" (sin shapes SSE), tabla del mapa, roadmap §5 con Fase 4 ✅, header de breaking-change reemplazado, changelog entry 2026-05-11.
+- [ ] Update del `README.md` raíz: descripción del repo + link a docs. Diferido a una fase posterior (no bloqueante).
 
 ### Criterios de "done"
 
-- `git diff legacy-mds-agents new-mds-deterministic` muestra exactamente lo que esperamos (todo el código eliminado está presente en legacy y ausente en new-mds-deterministic).
-- `pytest` pasa.
-- Staging (corriendo `new-mds-deterministic`) funciona sin la flag.
-- El árbol de `src/` es: `api.py`, `ingestion/`, `warehouse_explorer/`, `shared/`. Nada más.
+- [x] `pytest src/ingestion/tests/` pasa: 49 tests verdes, incluyendo los 4 nuevos parametrizados de `404`.
+- [x] `python -c "import api"` no falla (el módulo ya no depende de `main`).
+- [x] `grep -r "from src.agents" src/` no devuelve nada (verificado en smoke embebido del setup script).
+- [x] `grep -r "AsyncSqliteSaver\|pydantic_ai\|langchain\|google.generativeai\|chromadb" src/` vacío.
+- [x] El árbol de `src/` queda: `api.py`, `ingestion/`, `shared/`, `warehouse_explorer/`. Nada más de los agentes viejos.
 
 ### Riesgos
 
-- Dependencias ocultas: algún archivo de `shared/` podría todavía importar agentes. Mitigación: un grep final por `from src.agents` antes del merge.
+- ~~Dependencias ocultas: algún archivo de `shared/` podría todavía importar agentes.~~ **Mitigado:** smoke embebido en `setup-mds-phase4.sh` corre `grep` recursivo por todos los símbolos del stack viejo antes de commitear.
+- Nuevo riesgo (post-Fase 4): si Mili necesita revisar cómo era un shape SSE viejo para terminar la migración, el tag `legacy-mds-agents` lo conserva intacto. Aviso a Mili: ahora `fetch('/api/chat')` da `404`, no `Deprecation: true`. Si todavía hay alguna llamada en `frontend/` que no se migró, va a romper visiblemente — es lo que queremos.
 
 ---
 
@@ -383,12 +391,12 @@ Resultado: `POST /api/run` es **un endpoint nuevo y limpio**, sync JSON. Los SSE
  7 (limpieza + handoff)
 ```
 
-Las fases -1, 0 y 1 son aditivas (no rompen nada). La fase 2 es aditiva pero introduce código que aún no se usa. La fase 3 es la primera operacionalmente significativa. La fase 4 es la única que borra código y debería hacerse después de al menos una semana en staging con el grafo nuevo.
+Las fases -1, 0 y 1 son aditivas (no rompen nada). La fase 2 es aditiva pero introduce código que aún no se usa. La fase 3 es la primera operacionalmente significativa. La fase 4 es la única que borra código; se ejecutó en `new-mds-deterministic` (no en `main`), así que producción sigue corriendo el grafo viejo hasta el PR final.
 
 ## Roll-back
 
 - En cualquier fase pre-PR-final: roll-back = abandonar `new-mds-deterministic` (no se mergea a `main`). `main` nunca se ensució.
-- Fase 3 (con la flag `MDS_USE_LEGACY_GRAPH=1` activa): roll-back operacional inmediato sin tocar git.
+- Fase 3 ya no usa el flag `MDS_USE_LEGACY_GRAPH` (se descartó en favor de separación por endpoint). Si en Fase 4 hace falta volver atrás dentro de la branch, se hace con `git revert` del commit de Fase 4 — el código viejo vive intacto en `legacy-mds-agents`.
 - Post-PR-final a `main`: roll-back = `git revert` del merge commit, o checkout de `legacy-mds-agents` si la cosa se complicó. La rama `legacy-mds-agents` es el seguro permanente.
 
 ## Estimación informal de esfuerzo

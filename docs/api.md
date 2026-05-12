@@ -1,11 +1,11 @@
 # MDS API — referencia de contratos
 
 > **Audiencia:** Mili (frontend, `frontend/`). Este documento es la fuente de verdad de los endpoints HTTP que sirve el backend de MDS.
-> **Estado:** doc vivo. Se actualiza en cada fase del refactor que toque la API. Última edición: **2026-05-11 (Fase 3 ✅)**.
+> **Estado:** doc vivo. Se actualiza en cada fase del refactor que toque la API. Última edición: **2026-05-11 (Fase 4 ✅)**.
 >
 > Documentos relacionados: [`migration-plan.md`](migration-plan.md), [`architecture.md`](architecture.md), [`adr/001-multi-agent-to-deterministic-pipeline.md`](adr/001-multi-agent-to-deterministic-pipeline.md).
 >
-> ⚠️ **Breaking change en Fase 3:** los endpoints `/api/chat`, `/api/submit_input`, `/api/templates` y `/api/sessions/{id}/history` quedan **deprecated** y serán **eliminados en Fase 4**. El reemplazo es `POST /api/run` (sync JSON, sin SSE, sin estado de sesión). Cuando puedas, migrá el frontend a `/api/run`.
+> 🟢 **Estado post-Fase 4:** los endpoints `/api/chat`, `/api/submit_input`, `/api/templates` y `/api/sessions/{id}/history` **fueron eliminados** del backend. El único endpoint de ingesta es `POST /api/run` (sync JSON). Si el frontend todavía les hace fetch va a recibir `404`. Para el historial de cómo eran esos endpoints, ver el tag `legacy-mds-agents` en git.
 
 ---
 
@@ -27,18 +27,15 @@ RUN_MODE=api uvicorn api:app --reload --host 0.0.0.0 --port 8000
 
 ## 2. Mapa rápido de endpoints
 
-| Método | Path | Estado | Reemplaza a |
-|--------|------|--------|-------------|
-| POST   | `/api/run`                              | ✅ estable (v1.0)             | reemplaza `/api/chat` + `/api/submit_input` |
-| GET    | `/api/catalog`                          | ✅ estable (v1.0)             | reemplaza `/api/templates` |
-| GET    | `/api/catalog/{id}`                     | ✅ estable (v1.0)             | sin equivalente legacy |
-| GET    | `/api/templates`                        | 🔴 deprecated — removal Fase 4 | usar `/api/catalog` |
-| POST   | `/api/chat`                             | 🔴 deprecated — removal Fase 4 | usar `/api/run` |
-| POST   | `/api/submit_input`                     | 🔴 deprecated — removal Fase 4 | usar `/api/run` |
-| GET    | `/api/sessions/{session_id}/history`    | 🔴 deprecated — removal Fase 4 | sin sucesor (el nuevo flujo no tiene estado de sesión) |
+| Método | Path | Estado | Notas |
+|--------|------|--------|-------|
+| POST   | `/api/run`                              | ✅ estable (v1.0)             | Único endpoint de ingesta. Sync JSON. Reemplazó a `/api/chat` + `/api/submit_input`. |
+| GET    | `/api/catalog`                          | ✅ estable (v1.0)             | Listing del catálogo. Reemplazó a `/api/templates`. |
+| GET    | `/api/catalog/{id}`                     | ✅ estable (v1.0)             | Manifest completo de un conector. |
 
 > ✅ = estable, parte del contrato a largo plazo.
-> 🔴 = se borra en Fase 4. Mientras tanto sigue funcionando, pero las responses traen los headers `Deprecation: true` y `Sunset: Phase 4` (RFC 8594) como aviso. El header `Link` apunta al sucesor.
+>
+> **Endpoints eliminados en Fase 4** (devuelven `404` desde hoy): `/api/chat`, `/api/submit_input`, `/api/templates`, `/api/sessions/{session_id}/history`. Ver tag `legacy-mds-agents` si necesitás el historial.
 
 ---
 
@@ -234,7 +231,7 @@ Body con el shape de `formatted_response` que produce el nodo `format_response`:
 | Campo         | Tipo                       | Notas |
 |---------------|----------------------------|-------|
 | `manifest_id` | `string`                   | Eco del request. |
-| `tenant_id`   | `string`                   | Tenant resuelto. En Fase 3 está hardcodeado a `"dev"`. En Fase 5 viene del header `X-Tenant-Id`. |
+| `tenant_id`   | `string`                   | Tenant resuelto. Hoy está hardcodeado a `"dev"` en el handler (`_DEFAULT_TENANT_ID` en `src/api.py`). En Fase 5 viene del header `X-Tenant-Id` + resolver con Secret Manager + SA impersonation. |
 | `target_table`| `string`                   | Tabla destino en BigQuery, con tokens del `bronze_pattern` ya sustituidos. **MVP**: no se ejecuta el insert aún — eso queda para Fase 5. |
 | `ddl`         | `string`                   | DDL `CREATE TABLE` determinístico generado por `Manifest.to_ddl()`. Mismo contrato que ya usabas en `SchemaApproval.ddl`. |
 | `columns`     | `string[]`                 | Subset solicitado (o todos los selectables si pasaste `fields: []`). |
@@ -262,7 +259,7 @@ Body con el shape de `formatted_response` que produce el nodo `format_response`:
 |------|-----------------------------------------------------------------------------------------------------|----------------------|
 | 200  | Pipeline terminó OK o WARN.                                                                         | (no aplica — body es el shape de éxito) |
 | 400  | `request_validator` falló: faltan params, formato inválido, manifest_id desconocido, grupo `one_of` no satisfecho. | `validation_failed`  |
-| 422  | El JSON del body no parsea contra el shape mínimo de `RunRequest` (FastAPI/Pydantic lo intercepta antes del handler). | (formato Pydantic estándar) |
+| 422  | El JSON del body no parsea contra el shape mínimo de `RunRequest` (FastAPI/Pydantic lo intercepta antes del handler). Body: `{detail: <pydantic errors>, request_id}`. **También trae `X-Request-Id`**, vía un exception handler dedicado. | (formato Pydantic estándar + `request_id`) |
 | 502  | El conector falló (api unreachable, upstream 5xx, `status=error` reportado por el conector).        | `connector_failed`   |
 | 500  | Error inesperado del pipeline (DDL falló, excepción no manejada, no se produjo `formatted_response`). | `internal` / `pipeline_failed` / `no_formatted_response` |
 
@@ -271,7 +268,7 @@ Body con el shape de `formatted_response` que produce el nodo `format_response`:
 - `X-Request-Id`: uuid4 generado en cada request, para tracing. **Loguéalo en el frontend** cuando muestres un error — facilita mucho debug.
 - `Content-Type: application/json`.
 
-**Idempotencia y reintentos:** `/api/run` no escribe a BigQuery en Fase 3, así que reintentar es seguro. Cuando habilitemos write en Fase 5 vamos a agregar un `request_id` idempotente que el cliente puede pasar para evitar dobles inserts (te aviso por este doc cuando llegue).
+**Idempotencia y reintentos:** `/api/run` todavía no escribe a BigQuery (eso llega en Fase 5), así que reintentar es seguro. Cuando habilitemos write vamos a agregar un `request_id` idempotente que el cliente puede pasar para evitar dobles inserts (te aviso por este doc cuando llegue).
 
 ### 3.4 Mapping de tipos: BigQuery → frontend `FieldType`
 
@@ -292,146 +289,18 @@ Si te conviene, te mando un helper `bigqueryTypeToFieldType(t: string): FieldTyp
 
 ---
 
-## 4. Endpoints deprecated (removal en Fase 4)
+## 4. Endpoints eliminados en Fase 4
 
-Estos endpoints siguen sirviendo al grafo multi-agente viejo. **Se borran completos en Fase 4** (junto con el código de los agentes LLM). Mientras tanto siguen funcionando para que tengas tiempo de migrar el frontend a `/api/run`.
+Estos endpoints **ya no existen** en el backend a partir de Fase 4 (2026-05-11). Cualquier request los recibe con `404` por la falta del handler — no devuelven headers de deprecation porque el código de los handlers fue borrado junto con el grafo multi-agente.
 
-Todos exponen los headers advisory:
+| Endpoint                                | Sucesor                              | Notas de migración |
+|-----------------------------------------|--------------------------------------|--------------------|
+| `POST /api/chat`                        | `POST /api/run`                      | El nuevo flujo es sync JSON, sin SSE. Si necesitabas "elegir columnas antes", obtenelo con `GET /api/catalog/{id}` (campo `available_fields`) y mandá los `fields` directo en `/api/run`. |
+| `POST /api/submit_input`                | `POST /api/run`                      | No hay estado de sesión; cada llamada es independiente. |
+| `GET /api/templates`                    | `GET /api/catalog`                   | Misma idea (lista para el picker), pero contra los manifests reales del submodule en vez del set hardcoded. |
+| `GET /api/sessions/{session_id}/history`| (sin sucesor)                        | El flujo determinístico no tiene estado de sesión. Si querés persistir historial en el frontend, hacelo client-side. |
 
-```
-Deprecation: true
-Sunset: Phase 4
-Link: </api/run>; rel="successor-version"
-```
-
-(`/api/templates` apunta a `/api/catalog` en su `Link`.) Estos headers son aviso, no bloquean nada — el endpoint sigue respondiendo normal.
-
-> **Por qué los borramos:** el grafo nuevo es sincrónico, determinístico y sin estado de sesión. No hay equivalente directo entre "SSE con `ui_trigger`" del viejo y "JSON sync" del nuevo. La forma cómoda de migrar es: una llamada `/api/run` por intento; si necesitás "pedirle al usuario que elija columnas antes", hacés ese flow en el cliente (con `GET /api/catalog/{id}` para los `available_fields`) y después llamás `/api/run` con los `fields` ya elegidos.
-
-### 4.1 `GET /api/templates` (deprecated)
-
-Devuelve un set hardcoded de templates de paid media:
-
-```json
-{
-  "templates": [
-    {"id": "tiktok",     "name": "TikTok Ads", "category": "Paid Media", "status": "active"},
-    {"id": "meta",       "name": "Meta Ads",   "category": "Paid Media", "status": "active"},
-    {"id": "google-ads", "name": "Google Ads", "category": "Paid Media", "status": "active"}
-  ]
-}
-```
-
-### 4.2 `POST /api/chat` (deprecated, SSE)
-
-Arranca un turno del grafo viejo.
-
-**Request body:**
-
-```json
-{
-  "session_id": "string (LangGraph thread_id)",
-  "message":    "string (user query)"
-}
-```
-
-**Response:** `text/event-stream` (SSE). Cada evento es `data: <json>\n\n`. Headers:
-
-```
-Cache-Control: no-cache
-Connection: keep-alive
-X-Accel-Buffering: no
-```
-
-**Eventos SSE que emite (en orden):**
-
-1. **Connection establecido**
-   ```json
-   {"type": "connection", "status": "connected"}
-   ```
-
-2. **Progreso de cada nodo del grafo** (uno por nodo que se ejecuta):
-   ```json
-   {"type": "progress", "node": "coordinator"}
-   ```
-
-3. **Error durante el stream** (si algo explota mid-grafo):
-   ```json
-   {"type": "error", "detail": "<mensaje>"}
-   ```
-
-4. **Estado final** (último evento, cierra el stream):
-   ```json
-   {
-     "type": "final",
-     "response_text": "string",
-     "requires_human_input": true,
-     "ui_trigger": {
-       "component": "ColumnSelector" | "SchemaApproval",
-       "message": "string?",
-       "data": { /* depende del component */ }
-     },
-     "session_id": "string"
-   }
-   ```
-
-**Variantes de `ui_trigger.data` que emite hoy el grafo:**
-
-- `component: "SchemaApproval"`:
-  ```json
-  {
-    "ddl": "CREATE TABLE ...",
-    "columns": [
-      {"field_name": "...", "type": "STRING", "mode": "NULLABLE", "description": "..."}
-      /* … */
-    ],
-    "tableName": "Pending Schema"
-  }
-  ```
-- `component: "ColumnSelector"`:
-  ```json
-  {"available_fields": ["account_id", "campaign_name", ...]}
-  ```
-
-### 4.3 `POST /api/submit_input` (deprecated, SSE)
-
-Reanuda el grafo viejo después de un input humano (selección de columnas, aprobación de schema, etc).
-
-**Request body:**
-
-```json
-{
-  "session_id": "string (mismo thread_id que /api/chat)",
-  "user_input": "string | { message?: string, text?: string, user_message?: string, columns_selected?: string[], ... }"
-}
-```
-
-Si pasás un dict, el backend prioriza `message` → `text` → `user_message` para extraer el texto. Si ninguno está, lo serializa como JSON.
-
-**Response:** mismo formato SSE que `/api/chat`.
-
-### 4.4 `GET /api/sessions/{session_id}/history` (deprecated)
-
-Devuelve el state checkpointeado de un thread sin correr el grafo.
-
-**Response 200:**
-
-```json
-{
-  "session_id": "string",
-  "conversation_context": [/* turnos previos */],
-  "event_bus": [/* eventos de los agentes */],
-  "artifacts": {/* k/v producido por el grafo */},
-  "is_paused": true
-}
-```
-
-**Status codes:**
-
-- `200` si la sesión existe.
-- `404` si no se encuentra o está vacía.
-
-`is_paused: true` indica que el grafo está esperando input humano (hay nodos pendientes).
+Si te encontrás con un caso que dependía del comportamiento SSE / `ui_trigger` viejo y no ves cómo modelarlo con `/api/run`, decime y lo pensamos.
 
 ---
 
@@ -442,8 +311,8 @@ Devuelve el state checkpointeado de un thread sin correr el grafo.
 | **0** ✅ | Submodule + scaffolding | Sin cambios en la API. |
 | **1** ✅ | Manifest loader + catálogo | **Nuevos:** `GET /api/catalog`, `GET /api/catalog/{id}`. |
 | **2** ✅ | Nodos determinísticos + grafo nuevo en paralelo | Sin cambios públicos en la API todavía. El nuevo grafo se prueba con `LocalBackend` adentro. |
-| **3** ✅ | Entrypoint determinístico | **Nuevo:** `POST /api/run` (sync JSON). **Deprecated** (con headers RFC 8594): `/api/chat`, `/api/submit_input`, `/api/templates`, `/api/sessions/{id}/history`. Los deprecated siguen funcionando hasta Fase 4. tenant_id hardcodeado a `"dev"`; se reemplaza por header `X-Tenant-Id` en Fase 5. |
-| **4** | Borrado del legacy | Se borran `/api/chat`, `/api/submit_input`, `/api/templates`, `/api/sessions/{id}/history` del backend + el código de los agentes LLM. **Único endpoint POST de ingesta a partir de acá: `/api/run`.** |
+| **3** ✅ | Entrypoint determinístico | **Nuevo:** `POST /api/run` (sync JSON). **Deprecated** (con headers RFC 8594): `/api/chat`, `/api/submit_input`, `/api/templates`, `/api/sessions/{id}/history`. Los deprecated seguían funcionando hasta Fase 4. tenant_id hardcodeado a `"dev"`; se reemplaza por header `X-Tenant-Id` en Fase 5. |
+| **4** ✅ | Borrado del legacy | Se borraron `/api/chat`, `/api/submit_input`, `/api/templates`, `/api/sessions/{id}/history` del backend + el código de los agentes LLM (`src/agents/`, `src/main.py`, `src/services/`, etc.), el checkpointer `AsyncSqliteSaver`, y todas las dependencias del stack LLM en `requirements.txt`. **Único endpoint POST de ingesta a partir de acá: `/api/run`.** |
 | **5** | HTTPBackend + Cloud Functions en producción | Sin cambios en la API frontend-facing. Cambios internos: el dispatcher empieza a invocar Cloud Functions del cliente con SA impersonation. Para el frontend es transparente. |
 | **6** | Resto de conectores (IG, Google Ads, DV360) | El catálogo crece automáticamente — vas a ver más entries en `/api/catalog`. Sin cambios estructurales. |
 | **7** | Limpieza final | Doc final del flujo "agregar conector nuevo" en `connectors-library/CONTRIBUTING.md`. |
@@ -464,5 +333,6 @@ Cuando algo de esto cambie, edito este doc + te aviso.
 
 ## 7. Changelog
 
-- **2026-05-11 (Fase 3 ✅)** — Nuevo endpoint estable `POST /api/run` (sync JSON, sin SSE, sin estado de sesión). Marcamos `/api/chat`, `/api/submit_input`, `/api/templates` y `/api/sessions/{id}/history` como **deprecated** con headers RFC 8594 (`Deprecation`, `Sunset: Phase 4`, `Link` al sucesor). Los deprecated siguen funcionando hasta el borrado en Fase 4. Se descartó el flag `MDS_USE_LEGACY_GRAPH` previsto en la doc anterior — separamos por endpoint, no por flag, para hacer el borrado de Fase 4 más limpio.
+- **2026-05-11 (Fase 4 ✅)** — **Breaking:** se borraron del backend los handlers de `/api/chat`, `/api/submit_input`, `/api/templates` y `/api/sessions/{session_id}/history` (devuelven `404` desde hoy). Se eliminó todo el código del grafo multi-agente: `src/agents/`, `src/main.py`, `src/services/`, el checkpointer `AsyncSqliteSaver` y el `lifespan` que lo cargaba. `requirements.txt` quedó reducido al stack determinístico (FastAPI + uvicorn + langgraph + pydantic + jsonschema + pytest + httpx). `src/api.py` bumpeado a `2.0.0`. Se agregaron 4 tests parametrizados que verifican el `404` de los endpoints viejos para que cualquier regresión sea cazada por CI. Tag `legacy-mds-agents` apunta al commit pre-Fase 4 por si hay que volver a mirar la implementación histórica.
+- **2026-05-11 (Fase 3 ✅)** — Nuevo endpoint estable `POST /api/run` (sync JSON, sin SSE, sin estado de sesión). Marcamos `/api/chat`, `/api/submit_input`, `/api/templates` y `/api/sessions/{id}/history` como **deprecated** con headers RFC 8594 (`Deprecation`, `Sunset: Phase 4`, `Link` al sucesor). Los deprecated siguieron funcionando hasta el borrado en Fase 4. Se descartó el flag `MDS_USE_LEGACY_GRAPH` previsto en la doc anterior — separamos por endpoint, no por flag, para hacer el borrado de Fase 4 más limpio.
 - **2026-05-08** — Doc inicial. Endpoints estables: `/api/catalog`, `/api/catalog/{id}` (Fase 1). Documentados también los endpoints legacy del grafo viejo. Mapping BigQuery → `FieldType` propuesto.

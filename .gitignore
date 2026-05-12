@@ -28,18 +28,16 @@ dist/
 traces/
 *.log
 
-# LangGraph SQLite checkpointer (local persistence)
+# SQLite leftovers (the legacy AsyncSqliteSaver checkpointer was removed
+# in Phase 4 but old local DBs may still be on developer machines).
 checkpoints.db
 checkpoints.db-wal
 checkpoints.db-shm
 _test_cp.db
 
-# Staged connectors awaiting deployment (temporary files)
-src/pending_deploy/*.py
-
-
-# Ignorar la base de datos vectorial local (de tu script ingest_docs.py)
-chroma_db/
+# pytest tmp dirs and basetemp
+.pytest_cache/
+/tmp/pytest-mds/
 
 # ==========================================
 # 💻 IDEs y Sistema Operativo
