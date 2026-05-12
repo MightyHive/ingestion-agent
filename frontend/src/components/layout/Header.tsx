@@ -4,6 +4,7 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { UserMenu } from "@/components/auth/UserMenu"
 import { cn } from "@/lib/utils"
+import { ProjectsMenu } from "@/components/auth/ProjectsMenu"
 
 const headerNavClass =
   "text-slate-500 hover:text-slate-700 transition-colors py-1 text-sm font-medium"
@@ -39,6 +40,7 @@ export default function Header() {
         <button type="button" className="rounded-lg p-2 transition-colors hover:bg-slate-50">
           <span className="material-symbols-outlined text-slate-500">notifications</span>
         </button>
+        <ProjectsMenu />
         <UserMenu />
       </div>
     </header>
