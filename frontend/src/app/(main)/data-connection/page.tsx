@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button"
 import ConnectionStep from "@/components/data-connection/ConnectionStep"
 import SelectionStep from "@/components/data-connection/SelectionStep"
 import TemplateStep from "@/components/data-connection/TemplateStep"
+import TemplatesLibraryPanel from "@/components/templates/TemplatesLibraryPanel"
 
 export default function DataConnectionPage() {
   const [step, setStep] = useState(1)
@@ -123,6 +124,10 @@ export default function DataConnectionPage() {
           </Button>
         )}
       </div>
+
+      <section className="rounded-xl border border-border bg-slate-50/50 p-6">
+        <TemplatesLibraryPanel />
+      </section>
     </div>
   )
 }

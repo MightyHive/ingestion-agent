@@ -9,7 +9,14 @@ import ExportSchedulerStep from "@/components/data-export/ExportSchedulerStep"
 export default function DataExportPage() {
   const [step, setStep] = useState(1)
   const [formData, setFormData] = useState({
-    step1: { projectId: "", serviceAccountEmail: "" },
+    step1: {
+      projectId: "",
+      serviceAccountEmail: "",
+      destinationKind: "bigquery" as "bigquery" | "gcs",
+      bigQueryDataset: "",
+      gcsBucket: "",
+      gcsPrefix: "",
+    },
     step2: { platform: "", templateId: "", credentialIds: [] as string[], tableNames: {} as Record<string, string> },
     step3: { frequency: "daily", time: "00:00", scheduled: false, refreshWindowDays: undefined as number | undefined },
   })
@@ -26,7 +33,12 @@ export default function DataExportPage() {
     setFormData((prev) => ({ ...prev, step3: { ...prev.step3, ...data } }))
   }, [])
 
-  const step1Completed = formData.step1.projectId !== ""
+  const step1DestinationOk =
+    formData.step1.destinationKind === "bigquery"
+      ? formData.step1.bigQueryDataset.trim() !== ""
+      : formData.step1.gcsBucket.trim() !== ""
+
+  const step1Completed = formData.step1.projectId !== "" && step1DestinationOk
   const step2Completed =
     formData.step2.templateId !== "" &&
     formData.step2.credentialIds.length > 0 &&
@@ -44,6 +56,10 @@ export default function DataExportPage() {
             data={formData.step2}
             onUpdate={onStep2Update}
             projectId={formData.step1.projectId}
+            destinationKind={formData.step1.destinationKind}
+            bigQueryDataset={formData.step1.bigQueryDataset}
+            gcsBucket={formData.step1.gcsBucket}
+            gcsPrefix={formData.step1.gcsPrefix}
           />
         )
       case 3:

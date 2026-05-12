@@ -21,7 +21,14 @@ function platformRefreshDefault(platform: string, templateName = ""): number {
 }
 
 interface ExportFormData {
-  step1: { projectId: string; serviceAccountEmail: string }
+  step1: {
+    projectId: string
+    serviceAccountEmail: string
+    destinationKind: "bigquery" | "gcs"
+    bigQueryDataset: string
+    gcsBucket: string
+    gcsPrefix: string
+  }
   step2: { platform: string; templateId: string; credentialIds: string[]; tableNames: Record<string, string> }
   step3: { frequency: string; time: string; scheduled: boolean; refreshWindowDays?: number }
 }
@@ -94,6 +101,27 @@ export default function ExportSchedulerStep({ data, onUpdate }: Props) {
           <span className="text-on-surface-variant w-28 flex-shrink-0">Credentials</span>
           <span className="text-on-surface text-xs">
             {data.step2.credentialIds.length > 0 ? `${data.step2.credentialIds.length} selected` : "—"}
+          </span>
+        </div>
+        <div className="flex gap-2">
+          <span className="text-on-surface-variant w-28 flex-shrink-0">Load target</span>
+          <span className="text-on-surface text-xs">
+            {data.step1.destinationKind === "bigquery" ? (
+              <>
+                BigQuery · dataset{" "}
+                <code className="font-mono text-primary">{data.step1.bigQueryDataset || "—"}</code>
+              </>
+            ) : (
+              <>
+                GCS · <code className="font-mono text-primary">{data.step1.gcsBucket || "—"}</code>
+                {data.step1.gcsPrefix ? (
+                  <>
+                    {" "}
+                    / <code className="font-mono text-xs">{data.step1.gcsPrefix}</code>
+                  </>
+                ) : null}
+              </>
+            )}
           </span>
         </div>
         <div className="flex gap-2">
