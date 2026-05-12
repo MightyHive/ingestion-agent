@@ -7,6 +7,14 @@ import { buildExportTableName } from "@/lib/exportTableName"
 import { buildBigQueryCreateDdl } from "@/lib/bigquery-ddl"
 import { cn } from "@/lib/utils"
 
+function buildGcsObjectUri(bucket: string, prefix: string, objectKey: string): string {
+  const b = bucket.replace(/^gs:\/\//i, "").trim().replace(/\/+$/, "")
+  const pref = prefix.trim().replace(/^\/+|\/+$/g, "")
+  const key = objectKey.trim()
+  if (!b || !key) return ""
+  return pref ? `gs://${b}/${pref}/${key}` : `gs://${b}/${key}`
+}
+
 interface ExtractionData {
   platform: string
   templateId: string
@@ -18,9 +26,21 @@ interface Props {
   data: ExtractionData
   onUpdate: (data: Record<string, unknown>) => void
   projectId: string
+  destinationKind: "bigquery" | "gcs"
+  bigQueryDataset: string
+  gcsBucket: string
+  gcsPrefix: string
 }
 
-export default function ExtractionStep({ data, onUpdate, projectId }: Props) {
+export default function ExtractionStep({
+  data,
+  onUpdate,
+  projectId,
+  destinationKind,
+  bigQueryDataset,
+  gcsBucket,
+  gcsPrefix,
+}: Props) {
   const { credentials } = useCredentialStore()
   const { templates } = useTemplateStore()
   const [connected, setConnected] = useState(false)
@@ -141,7 +161,7 @@ export default function ExtractionStep({ data, onUpdate, projectId }: Props) {
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-on-surface uppercase tracking-wider">1 · Platform</h2>
         {availablePlatforms.length === 0 ? (
-          <p className="text-sm text-on-surface-variant">No templates available yet. Add one in Template Library.</p>
+          <p className="text-sm text-on-surface-variant">No templates available yet. Add one in Data Connection.</p>
         ) : (
           <div className="flex gap-2 flex-wrap">
             <button
@@ -303,26 +323,6 @@ export default function ExtractionStep({ data, onUpdate, projectId }: Props) {
             </p>
           </div>
 
-          <div className="flex flex-col gap-3">
-            <label className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider">
-              SQL Preview (DDL)
-            </label>
-            {selectedCredentials.map((cred) => (
-              <div key={`ddl-${cred.id}`} className="flex flex-col gap-1.5">
-                <p className="text-xs text-on-surface-variant">
-                  {cred.name} ({cred.market} · {cred.brand})
-                </p>
-                <pre className="text-xs font-mono bg-muted rounded-xl p-4 overflow-x-auto text-on-surface-variant whitespace-pre-wrap">
-                  {buildBigQueryCreateDdl(
-                    data.tableNames[cred.id] ?? "",
-                    selectedTemplate.columns,
-                    { projectId: projectId || "project", dataset: "dataset" }
-                  )}
-                </pre>
-              </div>
-            ))}
-          </div>
-
           <button
             type="button"
             onClick={handleConnect}
@@ -339,6 +339,75 @@ export default function ExtractionStep({ data, onUpdate, projectId }: Props) {
             </span>
             {connected ? "Connection established" : connecting ? "Connecting…" : "Generate connection"}
           </button>
+
+          <details className="group rounded-2xl border border-border bg-card open:pb-1">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4 text-sm font-semibold text-on-surface [&::-webkit-details-marker]:hidden">
+              <span>
+                {destinationKind === "bigquery"
+                  ? "SQL preview (DDL)"
+                  : "Destination preview (GCS)"}
+              </span>
+              <span className="material-symbols-outlined text-on-surface-variant transition-transform group-open:rotate-180">
+                expand_more
+              </span>
+            </summary>
+            <div className="border-t border-border px-5 pb-5 pt-4 flex flex-col gap-4">
+              {destinationKind === "bigquery"
+                ? selectedCredentials.map((cred) => {
+                    const ddl = buildBigQueryCreateDdl(
+                      data.tableNames[cred.id] ?? "",
+                      selectedTemplate.columns,
+                      {
+                        projectId: projectId || "project",
+                        dataset: bigQueryDataset.trim() || "dataset",
+                      }
+                    )
+                    return (
+                      <div
+                        key={`ddl-${cred.id}`}
+                        className="bg-card rounded-2xl border border-border p-5 flex flex-col gap-3"
+                      >
+                        <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider">
+                          {cred.name} ({cred.market} · {cred.brand})
+                        </p>
+                        <p className="text-xs text-on-surface-variant">
+                          {selectedTemplate.columns.length} columns · BigQuery Standard SQL
+                        </p>
+                        <pre className="text-xs font-mono text-on-surface-variant whitespace-pre-wrap overflow-x-auto leading-relaxed">
+                          {ddl}
+                        </pre>
+                      </div>
+                    )
+                  })
+                : selectedCredentials.map((cred) => {
+                    const uri = buildGcsObjectUri(
+                      gcsBucket,
+                      gcsPrefix,
+                      data.tableNames[cred.id] ?? ""
+                    )
+                    return (
+                      <div
+                        key={`gcs-${cred.id}`}
+                        className="bg-card rounded-2xl border border-border p-5 flex flex-col gap-2"
+                      >
+                        <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider">
+                          {cred.name} ({cred.market} · {cred.brand})
+                        </p>
+                        <p className="text-xs text-on-surface-variant">
+                          Object key matches the table name above. Adjust bucket or prefix in step 1 if needed.
+                        </p>
+                        {uri ? (
+                          <code className="text-xs font-mono text-primary break-all">{uri}</code>
+                        ) : (
+                          <span className="text-xs text-on-surface-variant">
+                            Set bucket and table name to see a full <code className="font-mono">gs://</code> path.
+                          </span>
+                        )}
+                      </div>
+                    )
+                  })}
+            </div>
+          </details>
         </section>
       )}
     </div>

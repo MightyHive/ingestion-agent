@@ -12,7 +12,6 @@ const emptyForm = {
   projectId: "",
   region: "",
   serviceAccount: "",
-  status: "BigQuery",
 }
 
 export default function DestinationLibraryPage() {
@@ -32,7 +31,7 @@ export default function DestinationLibraryPage() {
       projectId: formData.projectId.trim(),
       region: formData.region.trim() || "—",
       serviceAccount: formData.serviceAccount.trim() || "—",
-      status: formData.status.trim() || "BigQuery",
+      status: "BigQuery",
     })
     setIsModalOpen(false)
     setFormData(emptyForm)
@@ -97,14 +96,6 @@ export default function DestinationLibraryPage() {
                 value={formData.serviceAccount}
                 onChange={(e) => setFormData((f) => ({ ...f, serviceAccount: e.target.value }))}
                 placeholder="name@project.iam.gserviceaccount.com"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-[10px] font-bold text-gray-500 uppercase">Status</label>
-              <Input
-                value={formData.status}
-                onChange={(e) => setFormData((f) => ({ ...f, status: e.target.value }))}
-                placeholder="BigQuery"
               />
             </div>
           </div>
