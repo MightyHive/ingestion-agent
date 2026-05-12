@@ -6,6 +6,9 @@ import { AgentProgressPanel } from "@/components/agents/AgentProgressPanel"
 import { useConnectorStore } from "@/lib/stores/connectorStore"
 import { useTemplateStore } from "@/lib/stores/templateStore"
 import { generateMockTemplate } from "@/lib/mock-agent"
+import { buildBigQueryCreateDdl } from "@/lib/bigquery-ddl"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 
 function typeColor(type: string): string {
   if (type.includes("FLOAT") || type === "NUMERIC" || type === "BIGNUMERIC")
@@ -34,6 +37,13 @@ export default function TemplateStep({data, onUpdate}: any) {
   } = store
   const [copied, setCopied] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [templateName, setTemplateName] = useState("")
+
+  useEffect(() => {
+    if (templateProposal?.tableName) {
+      setTemplateName(templateProposal.tableName)
+    }
+  }, [templateProposal?.tableName])
 
   useEffect(() => {
     // Solo disparamos la simulación si tenemos los datos y no hay nada en proceso
@@ -57,12 +67,17 @@ export default function TemplateStep({data, onUpdate}: any) {
 
   function handleApprove() {
     if (templateProposal) {
+      const name = templateName.trim() || templateProposal.tableName
+      const ddl = buildBigQueryCreateDdl(name, templateProposal.columns, {
+        projectId: "project",
+        dataset: "dataset",
+      })
       addTemplate({
-        tableName: templateProposal.tableName,
+        tableName: name,
         platform:  platform ?? "",
         endpoint:  reportingLevel ?? "all",
         columns:   templateProposal.columns,
-        ddl:       templateProposal.ddl,
+        ddl,
       })
     }
     setSaved(true)
@@ -214,6 +229,27 @@ export default function TemplateStep({data, onUpdate}: any) {
               </p>
             </div>
 
+            {!saved && (
+              <div className="bg-card rounded-2xl border border-border p-5 flex flex-col gap-2">
+                <Label
+                  htmlFor="template-save-name"
+                  className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider"
+                >
+                  Template name
+                </Label>
+                <Input
+                  id="template-save-name"
+                  value={templateName}
+                  onChange={(e) => setTemplateName(e.target.value)}
+                  className="font-mono text-sm"
+                  placeholder="Table name in warehouse"
+                />
+                <p className="text-xs text-on-surface-variant">
+                  You can rename before saving. Defaults to the architect proposal.
+                </p>
+              </div>
+            )}
+
             {saved ? (
               <div className="flex flex-col gap-2">
                 <div className="w-full py-3 px-4 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center gap-2 text-emerald-800 text-sm font-semibold">
@@ -221,7 +257,7 @@ export default function TemplateStep({data, onUpdate}: any) {
                   Template saved
                 </div>
                 <p className="text-xs text-on-surface-variant text-center">
-                  <code className="font-mono">{templateProposal.tableName}</code> is ready to use.
+                  <code className="font-mono">{(templateName.trim() || templateProposal.tableName)}</code> is ready to use.
                 </p>
                 <button
                   onClick={() => router.push("/data-export")}

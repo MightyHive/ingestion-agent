@@ -1,7 +1,9 @@
 import type { Metadata } from "next"
 import { Inter } from "next/font/google"
+import { getServerSession } from "next-auth/next"
 import "./globals.css"
 import { AuthProvider } from "@/components/providers/AuthProvider"
+import { authOptions } from "@/lib/auth"
 
 const inter = Inter({
   variable: "--font-inter",
@@ -13,11 +15,13 @@ export const metadata: Metadata = {
   description: "Enterprise orchestration layer for media extraction and AI readiness.",
 }
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode
 }>) {
+  const session = await getServerSession(authOptions)
+
   return (
     <html lang="en" className={`${inter.variable} h-full antialiased`}>
       <head>
@@ -27,7 +31,7 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-full font-sans">
-        <AuthProvider>{children}</AuthProvider>
+        <AuthProvider session={session}>{children}</AuthProvider>
       </body>
     </html>
   )
