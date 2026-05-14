@@ -1,7 +1,9 @@
 import { create } from "zustand"
-import type { FieldRow } from "@/lib/platforms/types"
+import type { FieldRow, FieldType } from "@/lib/platforms/types"
 import { columnsFromUiTriggerData } from "@/lib/ui-trigger-fields"
 import { mockAgentStream, mockSubmitInputStream } from "@/lib/mock-agent"
+import { getConnectorSessionId } from "@/lib/sessions"
+
 
 const IS_MOCK = process.env.NEXT_PUBLIC_MOCK === "true"
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"
@@ -37,6 +39,72 @@ export interface TemplateProposal {
   tableName: string
   columns: TemplateColumn[]
   ddl: string
+}
+
+export interface CatalogConnector {
+  id: string
+  name: string
+  platform: string
+  connector: string
+  version: string
+  status: "alpha" | "beta" | "stable" | "deprecated"
+  owner?: string
+  description?: string
+  available_fields_count: number
+  params_summary: {
+    required: string[]
+    optional: string[]
+    one_of: string[][]
+  }
+}
+
+// Un field dentro del manifest (GET /api/catalog/{id})
+export interface ManifestField {
+  name: string
+  type: string
+  mode?: "NULLABLE" | "REQUIRED" | "REPEATED"
+  description?: string
+  selectable?: boolean
+  items_type?: string
+  fields?: string[]
+}
+
+// Un parámetro del manifest
+export interface ManifestParam {
+  name: string
+  type: string
+  days_back?: number
+  date_start?: string
+  date_stop?: string
+  since?: string
+  until?: string
+  description?: string
+}
+
+// El manifest completo (solo lo que usa el frontend)
+export interface Manifest {
+  id: string
+  name: string
+  platform: string
+  params: {
+    required: ManifestParam[]
+    optional: ManifestParam[]
+    one_of: string[][]
+  }
+  available_fields: ManifestField[]
+  table_naming: { bronze_pattern: string }
+}
+
+// Respuesta exitosa de POST /api/run
+export interface RunResult {
+  manifest_id: string
+  target_table: string
+  ddl: string
+  columns: string[]
+  row_count: number
+  rows_preview: Record<string, unknown>[]
+  errors: string[]
+  requestId?: string
 }
 
 // --- Helpers de Utilidad ---
@@ -84,6 +152,30 @@ function feedSseBuffer(buffer: string, chunk: string): { buffer: string; events:
   return { buffer: rest, events }
 }
 
+// Convierte tipo BigQuery del manifest → FieldType del ColumnSelector
+function bigqueryTypeToFieldType(t: string): FieldType {
+  if (t === "INT64" || t === "INTEGER") return "INTEGER"
+  if (t === "FLOAT64" || t === "NUMERIC" || t === "BIGNUMERIC") return "FLOAT"
+  if (t === "BOOL" || t === "BOOLEAN") return "BOOLEAN"
+  if (t === "DATE" || t === "DATETIME" || t === "TIMESTAMP" || t === "TIME") return "DATE"
+  return "STRING" // STRING, JSON, BYTES, ARRAY, STRUCT → opaque
+}
+
+// Convierte available_fields del manifest → FieldRow[] para el ColumnSelector
+function manifestFieldsToFieldRows(manifest: Manifest): FieldRow[] {
+  return manifest.available_fields
+    .filter((f) => f.selectable !== false)
+    .map((f) => ({
+      id: f.name,
+      name: f.name,
+      type: bigqueryTypeToFieldType(f.type),
+      kind: "metric" as const,  // el manifest no distingue metric/dimension por ahora
+      endpoint: manifest.id,
+      description: f.description,
+    }))
+}
+
+
 // --- Definición del Store ---
 
 interface ConnectorStore {
@@ -105,6 +197,17 @@ interface ConnectorStore {
   // Scheduler State
   scheduleConfig: ScheduleConfig | null
 
+  // real API
+  catalogConnectors: CatalogConnector[]
+  isLoadingCatalog: boolean
+  catalogError: string | null
+  manifest: Manifest | null
+  params: Record<string, unknown>  // valores del form de parámetros (days_back, etc.)
+  isRunning: boolean
+  runError: string | null
+  runRequestId: string | null      // para mostrar en mensajes de error
+  runResult: RunResult | null
+
   // Actions
   setConnector: (id: string, name: string, sessionId: string) => void
   setInvestigating: (value: boolean) => void
@@ -120,6 +223,10 @@ interface ConnectorStore {
   abortStream: () => void
   setScheduleConfig: (config: Partial<ScheduleConfig>) => void
   reset: () => void
+  loadCatalog: () => Promise<void>
+  selectConnector: (id: string, name: string) => Promise<void>
+  setParam: (key: string, value: unknown) => void
+  runPipeline: () => Promise<void>
 }
 
 function TemplateColumnsFromUiTrigger(raw: unknown): TemplateColumn[] {
@@ -154,6 +261,17 @@ const initialState = {
   uiTrigger: null as UiTriggerState,
   abortController: null as AbortController | null,
   scheduleConfig: null,
+
+  // real API
+  catalogConnectors: [] as CatalogConnector[],
+  isLoadingCatalog: false,
+  catalogError: null,
+  manifest: null,
+  params: {} as Record<string, unknown>,
+  isRunning: false,
+  runError: null,
+  runRequestId: null,
+  runResult: null,
 }
 
 export const useConnectorStore = create<ConnectorStore>()((set, get) => ({
@@ -213,6 +331,104 @@ export const useConnectorStore = create<ConnectorStore>()((set, get) => ({
     const ac = get().abortController
     if (ac) ac.abort()
     set({ abortController: null, isInvestigating: false, isProposing: false })
+  },
+
+  // SSE API
+  loadCatalog: async () => {
+    if (IS_MOCK) return  // en mock el catálogo es el array hardcodeado de ConnectionStep
+    set({ isLoadingCatalog: true, catalogError: null })
+    try {
+      const res = await fetch(`${API_BASE}/api/catalog`)
+      if (!res.ok) throw new Error(`GET /api/catalog → ${res.status}`)
+      const data = await res.json()
+      set({ catalogConnectors: data.connectors ?? [], isLoadingCatalog: false })
+    } catch (e) {
+      set({ catalogError: e instanceof Error ? e.message : "Error cargando catálogo", isLoadingCatalog: false })
+    }
+  },
+
+  selectConnector: async (id, name) => {
+    if (IS_MOCK) {
+      // Path mock: igual que antes
+      const sessionId = getConnectorSessionId(id)
+      get().setConnector(id, name, sessionId)
+      await get().startInvestigation(sessionId, "Mock query")
+    } else {
+      // Path real: fetch manifest + mapea fields
+      set({
+        connectorId: id,
+        connectorName: name,
+        manifest: null,
+        fields: [],
+        selectedFields: [],
+        templateProposal: null,
+        runResult: null,
+        runError: null,
+        params: {},
+        isInvestigating: true,       // reusamos el spinner que ya existe en SelectionStep
+        investigationError: null,
+      })
+      try {
+        const res = await fetch(`${API_BASE}/api/catalog/${id}`)
+        if (!res.ok) throw new Error(`GET /api/catalog/${id} → ${res.status}`)
+        const manifest: Manifest = await res.json()
+        set({ manifest, fields: manifestFieldsToFieldRows(manifest), isInvestigating: false })
+      } catch (e) {
+        set({
+          investigationError: e instanceof Error ? e.message : "Error cargando el conector",
+          isInvestigating: false,
+        })
+      }
+    }
+  },
+
+  setParam: (key, value) =>
+    set((state) => ({ params: { ...state.params, [key]: value } })),
+
+  runPipeline: async () => {
+    const { connectorId, selectedFields, sessionId, params } = get()
+    if (!connectorId) return
+
+    if (IS_MOCK) {
+      // Path mock: submitUserInput con SSE, igual que antes
+      await get().submitUserInput(sessionId!, { columns_selected: selectedFields })
+    } else {
+      // Path real: POST /api/run
+      set({ isRunning: true, runError: null, runRequestId: null })
+      try {
+        const res = await fetch(`${API_BASE}/api/run`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            manifest_id: connectorId,
+            params: { fields: selectedFields, ...params },
+          }),
+        })
+        const requestId = res.headers.get("X-Request-Id") ?? null
+        const body = await res.json()
+        if (!res.ok) {
+          set({ runError: body.reason ?? `Error ${res.status}`, runRequestId: requestId, isRunning: false })
+          return
+        }
+        const result: RunResult = { ...body, requestId }
+        set({
+          runResult: result,
+          templateProposal: {
+            tableName: result.target_table,
+            ddl: result.ddl,
+            columns: result.columns.map((colName) => ({
+              name: colName,
+              original: colName,
+              type: "STRING",
+              mode: "NULLABLE" as const,
+            })),
+          },
+          isRunning: false,
+        })
+      } catch (e) {
+        set({ runError: e instanceof Error ? e.message : "Error ejecutando el pipeline", isRunning: false })
+      }
+    }
   },
 
   startInvestigation: async (sessionId, message) => {
