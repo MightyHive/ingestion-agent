@@ -1,11 +1,13 @@
 import { create } from "zustand"
-import type { FieldRow, FieldType } from "@/lib/platforms/types"
+import type { FieldRow } from "@/lib/platforms/types"
+import { fetchCatalog, fetchManifest, runIngestion, bigqueryTypeToFieldType } from "@/lib/api/catalog"
+import { buildDefaultRunParams } from "@/lib/manifest-default-params"
 import { columnsFromUiTriggerData } from "@/lib/ui-trigger-fields"
 import { mockAgentStream, mockSubmitInputStream } from "@/lib/mock-agent"
 import { getConnectorSessionId } from "@/lib/sessions"
 
-
 const IS_MOCK = process.env.NEXT_PUBLIC_MOCK === "true"
+/** Legacy SSE paths only (`/api/chat`, `/api/submit_input`). Catalog + run use `@/lib/api/catalog`. */
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"
 
 // --- Tipos de Soporte ---
@@ -73,12 +75,11 @@ export interface ManifestField {
 export interface ManifestParam {
   name: string
   type: string
-  days_back?: number
-  date_start?: string
-  date_stop?: string
-  since?: string
-  until?: string
+  default?: unknown
+  minimum?: number
+  maximum?: number
   description?: string
+  enum?: unknown[]
 }
 
 // El manifest completo (solo lo que usa el frontend)
@@ -133,6 +134,13 @@ function dedupeFieldIdList(ids: string[]): string[] {
   return dedupeByStableKey(ids, (s) => s)
 }
 
+function sameFieldSelection(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false
+  const sa = [...a].sort()
+  const sb = [...b].sort()
+  return sa.every((v, i) => v === sb[i])
+}
+
 function dedupeTemplateColumnsByFieldName(columns: TemplateColumn[]): TemplateColumn[] {
   return dedupeByStableKey(columns, (c) => c.name)
 }
@@ -150,15 +158,6 @@ function feedSseBuffer(buffer: string, chunk: string): { buffer: string; events:
     } catch { /* malformed SSE chunk — skip */ }
   }
   return { buffer: rest, events }
-}
-
-// Convierte tipo BigQuery del manifest → FieldType del ColumnSelector
-function bigqueryTypeToFieldType(t: string): FieldType {
-  if (t === "INT64" || t === "INTEGER") return "INTEGER"
-  if (t === "FLOAT64" || t === "NUMERIC" || t === "BIGNUMERIC") return "FLOAT"
-  if (t === "BOOL" || t === "BOOLEAN") return "BOOLEAN"
-  if (t === "DATE" || t === "DATETIME" || t === "TIMESTAMP" || t === "TIME") return "DATE"
-  return "STRING" // STRING, JSON, BYTES, ARRAY, STRUCT → opaque
 }
 
 // Convierte available_fields del manifest → FieldRow[] para el ColumnSelector
@@ -226,7 +225,11 @@ interface ConnectorStore {
   loadCatalog: () => Promise<void>
   selectConnector: (id: string, name: string) => Promise<void>
   setParam: (key: string, value: unknown) => void
+  /** Remove keys from `params` (e.g. when switching `one_of` group). */
+  deleteParamKeys: (keys: readonly string[]) => void
   runPipeline: () => Promise<void>
+  /** Clear pipeline/template errors so the user can retry `runPipeline`. */
+  clearRunAndProposalErrors: () => void
 }
 
 function TemplateColumnsFromUiTrigger(raw: unknown): TemplateColumn[] {
@@ -304,7 +307,21 @@ export const useConnectorStore = create<ConnectorStore>()((set, get) => ({
 
   setInvestigationError: (error) => set({ investigationError: error, isInvestigating: false }),
 
-  setSelectedFields: (fields) => set({ selectedFields: dedupeFieldIdList(fields) }),
+  setSelectedFields: (fields) =>
+    set((state) => {
+      const next = dedupeFieldIdList(fields)
+      if (sameFieldSelection(state.selectedFields, next)) {
+        return { selectedFields: next }
+      }
+      return {
+        selectedFields: next,
+        templateProposal: null,
+        runResult: null,
+        runError: null,
+        runRequestId: null,
+        proposalError: null,
+      }
+    }),
 
   setTemplateProposal: (proposal) =>
     set({
@@ -338,10 +355,8 @@ export const useConnectorStore = create<ConnectorStore>()((set, get) => ({
     if (IS_MOCK) return  // en mock el catálogo es el array hardcodeado de ConnectionStep
     set({ isLoadingCatalog: true, catalogError: null })
     try {
-      const res = await fetch(`${API_BASE}/api/catalog`)
-      if (!res.ok) throw new Error(`GET /api/catalog → ${res.status}`)
-      const data = await res.json()
-      set({ catalogConnectors: data.connectors ?? [], isLoadingCatalog: false })
+      const data = await fetchCatalog()
+      set({ catalogConnectors: (data.connectors ?? []) as CatalogConnector[], isLoadingCatalog: false })
     } catch (e) {
       set({ catalogError: e instanceof Error ? e.message : "Error cargando catálogo", isLoadingCatalog: false })
     }
@@ -369,10 +384,13 @@ export const useConnectorStore = create<ConnectorStore>()((set, get) => ({
         investigationError: null,
       })
       try {
-        const res = await fetch(`${API_BASE}/api/catalog/${id}`)
-        if (!res.ok) throw new Error(`GET /api/catalog/${id} → ${res.status}`)
-        const manifest: Manifest = await res.json()
-        set({ manifest, fields: manifestFieldsToFieldRows(manifest), isInvestigating: false })
+        const manifest = (await fetchManifest(id)) as Manifest
+        set({
+          manifest,
+          fields: manifestFieldsToFieldRows(manifest),
+          params: buildDefaultRunParams(manifest),
+          isInvestigating: false,
+        })
       } catch (e) {
         set({
           investigationError: e instanceof Error ? e.message : "Error cargando el conector",
@@ -385,6 +403,18 @@ export const useConnectorStore = create<ConnectorStore>()((set, get) => ({
   setParam: (key, value) =>
     set((state) => ({ params: { ...state.params, [key]: value } })),
 
+  deleteParamKeys: (keys) =>
+    set((state) => {
+      const next = { ...state.params }
+      for (const k of keys) {
+        delete next[k]
+      }
+      return { params: next }
+    }),
+
+  clearRunAndProposalErrors: () =>
+    set({ runError: null, runRequestId: null, proposalError: null }),
+
   runPipeline: async () => {
     const { connectorId, selectedFields, sessionId, params } = get()
     if (!connectorId) return
@@ -396,21 +426,23 @@ export const useConnectorStore = create<ConnectorStore>()((set, get) => ({
       // Path real: POST /api/run
       set({ isRunning: true, runError: null, runRequestId: null })
       try {
-        const res = await fetch(`${API_BASE}/api/run`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            manifest_id: connectorId,
-            params: { fields: selectedFields, ...params },
-          }),
-        })
-        const requestId = res.headers.get("X-Request-Id") ?? null
-        const body = await res.json()
-        if (!res.ok) {
-          set({ runError: body.reason ?? `Error ${res.status}`, runRequestId: requestId, isRunning: false })
-          return
+        const manifest = get().manifest
+        const defaults = manifest ? buildDefaultRunParams(manifest) : {}
+        const mergedParams = { ...defaults, ...params }
+        const body = await runIngestion(connectorId, { fields: selectedFields, ...mergedParams })
+        const requestId = (body.requestId as string | null) ?? null
+        const result: RunResult = {
+          manifest_id: String(body.manifest_id ?? connectorId),
+          target_table: String(body.target_table ?? ""),
+          ddl: String(body.ddl ?? ""),
+          columns: Array.isArray(body.columns) ? (body.columns as string[]) : [],
+          row_count: typeof body.row_count === "number" ? body.row_count : 0,
+          rows_preview: Array.isArray(body.rows_preview)
+            ? (body.rows_preview as Record<string, unknown>[])
+            : [],
+          errors: Array.isArray(body.errors) ? (body.errors as string[]) : [],
+          requestId: requestId ?? undefined,
         }
-        const result: RunResult = { ...body, requestId }
         set({
           runResult: result,
           templateProposal: {
@@ -426,7 +458,12 @@ export const useConnectorStore = create<ConnectorStore>()((set, get) => ({
           isRunning: false,
         })
       } catch (e) {
-        set({ runError: e instanceof Error ? e.message : "Error ejecutando el pipeline", isRunning: false })
+        const err = e as Error & { requestId?: string | null }
+        set({
+          runError: err instanceof Error ? err.message : "Error ejecutando el pipeline",
+          runRequestId: err.requestId ?? null,
+          isRunning: false,
+        })
       }
     }
   },

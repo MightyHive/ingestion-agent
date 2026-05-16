@@ -10,6 +10,9 @@
 # Solo ignorar JSONs en la raíz por si descargas las Service Accounts de GCP 
 /*.json 
 
+# Tenant registry (secrets) — keep tenants.json.example in git
+config/tenants.json
+
 # ==========================================
 # 🐍 Python & Entorno Virtual
 # ==========================================

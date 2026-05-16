@@ -1,0 +1,12 @@
+{
+  "tenants": {
+    "dev": {
+      "gcp_project": "YOUR_GCP_PROJECT_ID",
+      "service_account": "mds-runner@YOUR_GCP_PROJECT_ID.iam.gserviceaccount.com",
+      "context": {
+        "ad_account_id": "YOUR_META_AD_ACCOUNT_ID",
+        "access_token": "YOUR_META_ACCESS_TOKEN"
+      }
+    }
+  }
+}

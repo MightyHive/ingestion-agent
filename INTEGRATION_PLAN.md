@@ -451,10 +451,22 @@ Para arrancar con integración real: `NEXT_PUBLIC_API_URL=http://localhost:8000 
 
 ## Para probar
 
+**Tenant local (obligatorio para `POST /api/run` con conectores reales):**
+
+1. Copiá `config/tenants.json.example` → `config/tenants.json` (o editá el `config/tenants.json` ya creado).
+2. Reemplazá placeholders: `gcp_project`, `ad_account_id`, `access_token` (ver `auth.context_required` del manifest Meta).
+3. En la raíz del repo, en `.env`: `MDS_TENANTS_FILE=../config/tenants.json` (ver `.env.example`).
+4. La API usa `tenant_id: "dev"` — la clave en JSON debe ser `"dev"`.
+
+Alternativa: `~/.mds/tenants.json` sin `MDS_TENANTS_FILE`.
+
 ```bash
-# Terminal 1: backend
-cd src
-RUN_MODE=api uvicorn api:app --reload --host 0.0.0.0 --port 8000
+# Terminal 1: backend (recomendado — setea MDS_TENANTS_FILE automático)
+./scripts/dev-api.sh
+
+# O manual:
+# export MDS_TENANTS_FILE="$(pwd)/config/tenants.json"   # desde repo root
+# cd src && RUN_MODE=api uvicorn api:app --reload --host 0.0.0.0 --port 8000
 
 # Terminal 2: frontend
 cd frontend
@@ -464,7 +476,7 @@ NEXT_PUBLIC_API_URL=http://localhost:8000 npm run dev
 Flujo a verificar:
 1. Data Connection → Step 1: aparece "Facebook Ads – Ad-level Insights" (del catálogo real)
 2. Click → Step 2: aparecen los 31 fields reales + form de parámetros
-3. Seleccionar algunos fields, poner `days_back: 7`, Next
+3. Seleccionar reporting scope + fields, Next (la ventana `days_back` va por default del manifest, no en UI)
 4. Step 3: spinner → DDL real → preview con datos → Save template
 
 ---

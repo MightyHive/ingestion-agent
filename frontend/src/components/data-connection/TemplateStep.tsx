@@ -1,43 +1,82 @@
 "use client"
 
-import {useEffect, useState} from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
-import { AgentProgressPanel } from "@/components/agents/AgentProgressPanel"
+import { useShallow } from "zustand/react/shallow"
 import { useConnectorStore } from "@/lib/stores/connectorStore"
+import type { RunResult } from "@/lib/stores/connectorStore"
 import { useTemplateStore } from "@/lib/stores/templateStore"
-import { generateMockTemplate } from "@/lib/mock-agent"
-import { buildBigQueryCreateDdl } from "@/lib/bigquery-ddl"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Button } from "@/components/ui/button"
 
-function typeColor(type: string): string {
-  if (type.includes("FLOAT") || type === "NUMERIC" || type === "BIGNUMERIC")
-    return "bg-amber-50 text-amber-700"
-  if (type.includes("INT")) return "bg-purple-50 text-purple-700"
-  if (type === "STRING" || type === "BYTES") return "bg-blue-50 text-blue-700"
-  if (type === "DATE" || type === "TIMESTAMP") return "bg-green-50 text-green-700"
-  if (type === "BOOL") return "bg-slate-100 text-slate-600"
-  return "bg-muted text-on-surface-variant"
+function previewColumnOrder(result: RunResult | null): string[] {
+  if (!result) return []
+  if (result.columns.length > 0) return result.columns
+  const row = result.rows_preview[0]
+  if (row && typeof row === "object") return Object.keys(row)
+  return []
 }
 
-export default function TemplateStep({data, onUpdate}: any) {
-  const platform       = data.step1?.platform
-  const columns        = data.step2?.columns || []
+function cellPreview(value: unknown): string {
+  if (value === null || value === undefined) return "—"
+  if (typeof value === "object") return JSON.stringify(value)
+  return String(value)
+}
+
+export default function TemplateStep({
+  data,
+  onUpdate: _onUpdate,
+}: {
+  data: {
+    step1?: { platform?: string }
+    step2?: { columns?: string[]; reportingLevel?: string | null }
+  }
+  onUpdate?: (d: Record<string, unknown>) => void
+}) {
+  void _onUpdate
+  const platform = data.step1?.platform
+  const columns = data.step2?.columns ?? []
   const reportingLevel = data.step2?.reportingLevel ?? null
-  const router         = useRouter()
-  const store          = useConnectorStore()
-  const { addTemplate } = useTemplateStore()
+  const router = useRouter()
   const {
+    connectorId,
     templateProposal,
     isProposing,
+    isRunning,
     proposalError,
+    runError,
+    runRequestId,
+    runResult,
     connectorName,
-    selectedFields,
-    completedNodes,
-  } = store
+    clearRunAndProposalErrors,
+    setSelectedFields,
+    runPipeline,
+  } = useConnectorStore(
+    useShallow((s) => ({
+      connectorId: s.connectorId,
+      templateProposal: s.templateProposal,
+      isProposing: s.isProposing,
+      isRunning: s.isRunning,
+      proposalError: s.proposalError,
+      runError: s.runError,
+      runRequestId: s.runRequestId,
+      runResult: s.runResult,
+      connectorName: s.connectorName,
+      clearRunAndProposalErrors: s.clearRunAndProposalErrors,
+      setSelectedFields: s.setSelectedFields,
+      runPipeline: s.runPipeline,
+    }))
+  )
+  const { addTemplate } = useTemplateStore()
+
   const [copied, setCopied] = useState(false)
   const [saved, setSaved] = useState(false)
   const [templateName, setTemplateName] = useState("")
+
+  const columnsKey = useMemo(() => [...columns].sort().join("|"), [columns])
+  const loading = isProposing || isRunning
+  const pipelineError = runError ?? proposalError
 
   useEffect(() => {
     if (templateProposal?.tableName) {
@@ -46,42 +85,33 @@ export default function TemplateStep({data, onUpdate}: any) {
   }, [templateProposal?.tableName])
 
   useEffect(() => {
-    // Solo disparamos la simulación si tenemos los datos y no hay nada en proceso
-    if (platform && columns.length > 0 && !templateProposal && !isProposing) {
-      
-      const simulateAgent = async () => {
-        store.setProposing(true);
-        store.setSelectedFields(columns);
-        
-        // Simulamos el trabajo del arquitecto
-        await new Promise(r => setTimeout(r, 1500));
-        
-        const proposal = generateMockTemplate(platform, columns, reportingLevel);
-        store.setTemplateProposal(proposal);
-        store.setProposing(false);
-      };
-  
-      simulateAgent();
-    }
-  }, [platform, columns.length, templateProposal, isProposing]); // Se ejecuta si algo de esto cambia
+    if (columns.length === 0) return
+    const s = useConnectorStore.getState()
+    if (!s.connectorId) return
+    if (s.templateProposal || s.isRunning || s.isProposing) return
+    if (s.runError || s.proposalError) return
+    s.setSelectedFields(columns)
+    void s.runPipeline()
+  }, [columnsKey, connectorId])
 
-  function handleApprove() {
-    if (templateProposal) {
-      const name = templateName.trim() || templateProposal.tableName
-      const ddl = buildBigQueryCreateDdl(name, templateProposal.columns, {
-        projectId: "project",
-        dataset: "dataset",
-      })
-      addTemplate({
-        tableName: name,
-        platform:  platform ?? "",
-        endpoint:  reportingLevel ?? "all",
-        columns:   templateProposal.columns,
-        ddl,
-      })
-    }
+  const handleRetry = useCallback(() => {
+    clearRunAndProposalErrors()
+    setSelectedFields(columns)
+    void runPipeline()
+  }, [clearRunAndProposalErrors, setSelectedFields, runPipeline, columns])
+
+  const handleApprove = useCallback(() => {
+    if (!templateProposal) return
+    const name = templateName.trim() || templateProposal.tableName
+    addTemplate({
+      tableName: name,
+      platform: platform ?? "",
+      endpoint: reportingLevel ?? "all",
+      columns: templateProposal.columns,
+      ddl: templateProposal.ddl,
+    })
     setSaved(true)
-  }
+  }, [addTemplate, platform, templateName, templateProposal, reportingLevel])
 
   async function copyDDL() {
     if (!templateProposal?.ddl) return
@@ -90,13 +120,37 @@ export default function TemplateStep({data, onUpdate}: any) {
     setTimeout(() => setCopied(false), 2000)
   }
 
-  if (!isProposing && !templateProposal && !proposalError) {
+  const previewCols = previewColumnOrder(runResult)
+  const previewRows = runResult?.rows_preview ?? []
+
+  if (!loading && !templateProposal && !pipelineError && columns.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center gap-4 py-20">
         <span className="material-symbols-outlined text-4xl text-on-surface-variant">template</span>
         <p className="text-sm text-on-surface-variant">There is no template generated.</p>
-        <button onClick={() => router.push("/selectors")} className="text-sm font-semibold text-primary hover:underline">
-          Go to Selectors
+        <p className="text-xs text-on-surface-variant">Select at least one field in the previous step.</p>
+        <button
+          type="button"
+          onClick={() => router.push("/data-connection")}
+          className="text-sm font-semibold text-primary hover:underline"
+        >
+          Back to data connection
+        </button>
+      </div>
+    )
+  }
+
+  if (!loading && !templateProposal && !pipelineError && columns.length > 0 && !connectorId) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-20">
+        <span className="material-symbols-outlined text-4xl text-on-surface-variant">link_off</span>
+        <p className="text-sm text-on-surface-variant">No connector is active. Go back and choose a connector.</p>
+        <button
+          type="button"
+          onClick={() => router.push("/data-connection")}
+          className="text-sm font-semibold text-primary hover:underline"
+        >
+          Back to data connection
         </button>
       </div>
     )
@@ -107,39 +161,56 @@ export default function TemplateStep({data, onUpdate}: any) {
       <div>
         <h1 className="text-2xl font-semibold text-on-surface">Template</h1>
         <p className="text-sm text-on-surface-variant mt-0.5">
-          The Data Architect proposes the following structure for your data.
+          Review the proposed warehouse table, DDL from the ingestion run, and a sample of rows.
         </p>
       </div>
 
-      {isProposing && (
-        <div className="bg-card rounded-2xl border border-border p-6">
-          <AgentProgressPanel completedNodes={completedNodes} active={isProposing} />
-          <p className="text-xs text-on-surface-variant mt-4">
-            Data Architect is designing the template. This may take a few seconds.
-          </p>
+      {pipelineError && (
+        <div className="bg-card rounded-2xl border border-red-200 p-6 flex flex-col gap-3 text-red-700">
+          <div className="flex items-start gap-3">
+            <span className="material-symbols-outlined shrink-0">error</span>
+            <div className="min-w-0 flex-1">
+              <p className="font-semibold text-sm">Run failed</p>
+              <p className="text-xs mt-1 break-words">{pipelineError}</p>
+              {runRequestId ? (
+                <p className="text-xs mt-2 font-mono text-red-800/90">
+                  Request-ID: <span className="select-all">{runRequestId}</span>
+                </p>
+              ) : null}
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={handleRetry}>
+              Retry
+            </Button>
+            <Button type="button" variant="ghost" size="sm" onClick={() => router.push("/data-connection")}>
+              Back to data connection
+            </Button>
+          </div>
         </div>
       )}
 
-      {/* Error */}
-      {proposalError && (
-        <div className="bg-card rounded-2xl border border-red-200 p-6 flex items-center gap-3 text-red-700">
-          <span className="material-symbols-outlined">error</span>
-          <div>
-            <p className="font-semibold text-sm">Error while generating the template</p>
-            <p className="text-xs mt-0.5">{proposalError}</p>
-          </div>
-          <button onClick={() => router.push("/selectors")} className="ml-auto text-xs font-semibold text-primary hover:underline">
-            Go to Selectors
-          </button>
+      {loading && !templateProposal && (
+        <div className="bg-card rounded-2xl border border-border p-10 flex flex-col items-center justify-center gap-3 text-on-surface-variant">
+          <span
+            className="material-symbols-outlined text-3xl animate-spin"
+            style={{ animationDuration: "1.2s" }}
+            aria-hidden
+          >
+            progress_activity
+          </span>
+          <p className="text-sm font-medium text-on-surface">Running ingestion…</p>
+          <p className="text-xs text-on-surface-variant text-center max-w-md">
+            Building DDL and preview from the connector. This is synchronous on the API.
+          </p>
         </div>
       )}
 
       {templateProposal && (
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6">
-
           <div className="flex flex-col gap-4">
             <div className="bg-card rounded-2xl border border-border p-5 flex flex-col gap-4">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-4 flex-wrap">
                 <div>
                   <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-1">
                     Template proposal
@@ -155,7 +226,7 @@ export default function TemplateStep({data, onUpdate}: any) {
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-ermerald-50 text-emerald-700 border border-emerald-200 font-medium">
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-medium">
                     Standard
                   </span>
                 </div>
@@ -165,10 +236,18 @@ export default function TemplateStep({data, onUpdate}: any) {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-border">
-                      <th className="text-left py-2 px-2 text-xs font-semibold text-on-surface-variant uppercase tracking-wider w-24">Field</th>
-                      <th className="text-left py-2 px-2 text-xs font-semibold text-on-surface-variant uppercase tracking-wider w-24">Type</th>
-                      <th className="text-left py-2 px-2 text-xs font-semibold text-on-surface-variant uppercase tracking-wider w-24">Mode</th>
-                      <th className="text-left py-2 px-2 text-xs font-semibold text-on-surface-variant uppercase tracking-wider w-48">Description</th>
+                      <th className="text-left py-2 px-2 text-xs font-semibold text-on-surface-variant uppercase tracking-wider w-24">
+                        Field
+                      </th>
+                      <th className="text-left py-2 px-2 text-xs font-semibold text-on-surface-variant uppercase tracking-wider w-24">
+                        Type
+                      </th>
+                      <th className="text-left py-2 px-2 text-xs font-semibold text-on-surface-variant uppercase tracking-wider w-24">
+                        Mode
+                      </th>
+                      <th className="text-left py-2 px-2 text-xs font-semibold text-on-surface-variant uppercase tracking-wider w-48">
+                        Description
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -198,7 +277,65 @@ export default function TemplateStep({data, onUpdate}: any) {
               </div>
             </div>
 
-            
+            {templateProposal.ddl ? (
+              <div className="bg-card rounded-2xl border border-border p-5 flex flex-col gap-3">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider">DDL</p>
+                  <button
+                    type="button"
+                    onClick={() => void copyDDL()}
+                    className="text-xs font-semibold text-primary hover:underline"
+                  >
+                    {copied ? "Copied" : "Copy DDL"}
+                  </button>
+                </div>
+                <pre className="text-xs font-mono bg-muted/50 border border-border rounded-xl p-4 overflow-x-auto max-h-72 overflow-y-auto whitespace-pre-wrap break-words">
+                  {templateProposal.ddl}
+                </pre>
+              </div>
+            ) : null}
+
+            {previewRows.length > 0 && previewCols.length > 0 ? (
+              <div className="bg-card rounded-2xl border border-border p-5 flex flex-col gap-3">
+                <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider">
+                  Row preview
+                </p>
+                <p className="text-xs text-on-surface-variant">
+                  Showing {previewRows.length} row{previewRows.length === 1 ? "" : "s"}
+                  {runResult != null && typeof runResult.row_count === "number"
+                    ? ` (${runResult.row_count} total reported by run)`
+                    : ""}
+                  .
+                </p>
+                <div className="overflow-x-auto max-h-80 overflow-y-auto rounded-xl border border-border">
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0 bg-muted/80 backdrop-blur-sm z-[1]">
+                      <tr>
+                        {previewCols.map((c) => (
+                          <th
+                            key={c}
+                            className="text-left py-2 px-2 font-semibold text-on-surface-variant whitespace-nowrap border-b border-border"
+                          >
+                            {c}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {previewRows.map((row, i) => (
+                        <tr key={i} className="border-b border-border/50">
+                          {previewCols.map((c) => (
+                            <td key={c} className="py-1.5 px-2 font-mono text-on-surface max-w-[220px] truncate" title={cellPreview(row[c])}>
+                              {cellPreview(row[c])}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ) : null}
           </div>
 
           <div className="flex flex-col gap-4">
@@ -208,24 +345,39 @@ export default function TemplateStep({data, onUpdate}: any) {
                 <p className="text-sm font-semibold text-on-surface">{connectorName}</p>
               </div>
               <div>
-                <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-1">selected fields</p>
-                <p className="text-sm font-semibold text-on-surface">{selectedFields.length}</p>
+                <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-1">
+                  Selected fields
+                </p>
+                <p className="text-sm font-semibold text-on-surface">{columns.length}</p>
               </div>
               <div>
                 <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-1">Table</p>
                 <code className="text-xs font-mono text-primary">{templateProposal.tableName}</code>
               </div>
+              {runResult != null && (
+                <div>
+                  <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-1">Run</p>
+                  <p className="text-xs text-on-surface">
+                    Rows: <span className="font-semibold">{runResult.row_count}</span>
+                  </p>
+                  {runResult.errors.length > 0 ? (
+                    <ul className="text-xs text-amber-800 mt-2 list-disc pl-4 space-y-1">
+                      {runResult.errors.map((e, i) => (
+                        <li key={i}>{e}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </div>
+              )}
             </div>
 
             <div className="bg-card rounded-2xl border border-border p-5">
               <div className="flex items-start gap-2 mb-2">
-                <span className="material-symbols-outlined text-primary text-base mt-0.5">smart_toy</span>
-                <p className="text-xs font-semibold text-on-surface">Automation Insight</p>
+                <span className="material-symbols-outlined text-primary text-base mt-0.5">info</span>
+                <p className="text-xs font-semibold text-on-surface">Summary</p>
               </div>
               <p className="text-xs text-on-surface-variant leading-relaxed">
-                The Data Architect Agent proposes {templateProposal.columns.filter(c => c.mode === "REQUIRED").length} required fields
-                and {templateProposal.columns.filter(c => c.mode === "NULLABLE").length} as optionals.
-                The types were adapted to the BigQuery standard.
+                DDL and column list come from the ingestion run. Save the template to use it in Data Export.
               </p>
             </div>
 
@@ -244,9 +396,7 @@ export default function TemplateStep({data, onUpdate}: any) {
                   className="font-mono text-sm"
                   placeholder="Table name in warehouse"
                 />
-                <p className="text-xs text-on-surface-variant">
-                  You can rename before saving. Defaults to the architect proposal.
-                </p>
+                <p className="text-xs text-on-surface-variant">You can rename before saving. Defaults to the run output.</p>
               </div>
             )}
 
@@ -257,9 +407,10 @@ export default function TemplateStep({data, onUpdate}: any) {
                   Template saved
                 </div>
                 <p className="text-xs text-on-surface-variant text-center">
-                  <code className="font-mono">{(templateName.trim() || templateProposal.tableName)}</code> is ready to use.
+                  <code className="font-mono">{templateName.trim() || templateProposal.tableName}</code> is ready to use.
                 </p>
                 <button
+                  type="button"
                   onClick={() => router.push("/data-export")}
                   className="w-full py-2.5 px-4 bg-primary text-white rounded-xl font-semibold text-sm hover:bg-primary/90 transition-colors flex items-center justify-center gap-2"
                 >
@@ -270,6 +421,7 @@ export default function TemplateStep({data, onUpdate}: any) {
             ) : (
               <div className="flex flex-col gap-2">
                 <button
+                  type="button"
                   onClick={handleApprove}
                   className="w-full py-2.5 px-4 bg-primary text-white rounded-xl font-semibold text-sm hover:bg-primary/90 transition-colors flex items-center justify-center gap-2"
                 >

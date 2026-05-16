@@ -125,9 +125,11 @@ export default function DataConnectionPage() {
         )}
       </div>
 
-      <section className="rounded-xl border border-border bg-slate-50/50 p-6">
-        <TemplatesLibraryPanel />
-      </section>
+      {step === 1 && (
+        <section className="rounded-xl border border-border bg-slate-50/50 p-6">
+          <TemplatesLibraryPanel />
+        </section>
+      )}
     </div>
   )
 }
