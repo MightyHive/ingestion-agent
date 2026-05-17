@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import { useCredentialStore } from "@/lib/stores/credentialStore"
 import { useTemplateStore } from "@/lib/stores/templateStore"
 import { buildExportTableName } from "@/lib/exportTableName"
+import { platformsCompatible } from "@/lib/platform-match"
 import { buildBigQueryCreateDdl } from "@/lib/bigquery-ddl"
 import { cn } from "@/lib/utils"
 
@@ -47,9 +48,6 @@ export default function ExtractionStep({
   const [connecting, setConnecting] = useState(false)
   const ALL_PLATFORMS = "__all__"
 
-  const normalizePlatform = (platform: string) =>
-    platform.trim().toLowerCase().replace(/\s+/g, "_")
-
   const selectedTemplate = templates.find((t) => t.id === data.templateId) ?? null
   const activePlatform = selectedTemplate?.platform ?? ""
   const selectedCredentials = data.credentialIds
@@ -59,15 +57,15 @@ export default function ExtractionStep({
 
   const availablePlatforms = Array.from(new Set(templates.map((t) => t.platform))).sort()
   const filteredTemplates = data.platform
-    ? templates.filter((t) => normalizePlatform(t.platform) === normalizePlatform(data.platform))
+    ? templates.filter((t) => platformsCompatible(t.platform, data.platform))
     : templates
   const compatibleCredentials = activePlatform
-    ? credentials.filter((c) => normalizePlatform(c.platform) === normalizePlatform(activePlatform))
+    ? credentials.filter((c) => platformsCompatible(c.platform, activePlatform))
     : []
 
   useEffect(() => {
     if (!data.platform || !selectedTemplate) return
-    if (normalizePlatform(selectedTemplate.platform) === normalizePlatform(data.platform)) return
+    if (platformsCompatible(selectedTemplate.platform, data.platform)) return
     onUpdate({ templateId: "", credentialIds: [], tableNames: {} })
   }, [data.platform, onUpdate, selectedTemplate])
 
@@ -75,7 +73,7 @@ export default function ExtractionStep({
     if (!activePlatform || data.credentialIds.length === 0) return
     const validCredentialIds = data.credentialIds.filter((id) => {
       const credential = credentials.find((c) => c.id === id)
-      return credential && normalizePlatform(credential.platform) === normalizePlatform(activePlatform)
+      return credential && platformsCompatible(credential.platform, activePlatform)
     })
     if (validCredentialIds.length !== data.credentialIds.length) {
       const nextTableNames = Object.fromEntries(
@@ -177,7 +175,7 @@ export default function ExtractionStep({
               All
             </button>
             {availablePlatforms.map((platform) => {
-              const isSelected = normalizePlatform(data.platform) === normalizePlatform(platform)
+              const isSelected = platformsCompatible(data.platform, platform)
               return (
                 <button
                   key={platform}

@@ -3,7 +3,8 @@ import type { FieldRow } from "@/lib/platforms/types"
 import { fetchCatalog, fetchManifest, runIngestion, bigqueryTypeToFieldType } from "@/lib/api/catalog"
 import { buildDefaultRunParams } from "@/lib/manifest-default-params"
 import { columnsFromUiTriggerData } from "@/lib/ui-trigger-fields"
-import { mockAgentStream, mockSubmitInputStream } from "@/lib/mock-agent"
+import { generateMockTemplate, mockAgentStream, mockSubmitInputStream } from "@/lib/mock-agent"
+import { buildTemplateProposalFromSelection } from "@/lib/template-proposal"
 import { getConnectorSessionId } from "@/lib/sessions"
 
 const IS_MOCK = process.env.NEXT_PUBLIC_MOCK === "true"
@@ -228,7 +229,9 @@ interface ConnectorStore {
   /** Remove keys from `params` (e.g. when switching `one_of` group). */
   deleteParamKeys: (keys: readonly string[]) => void
   runPipeline: () => Promise<void>
-  /** Clear pipeline/template errors so the user can retry `runPipeline`. */
+  /** Build template proposal from selected fields only (no API fetch). */
+  proposeTemplateFromSelection: (reportingLevel?: string | null) => void
+  /** Clear pipeline/template errors so the user can retry. */
   clearRunAndProposalErrors: () => void
 }
 
@@ -414,6 +417,38 @@ export const useConnectorStore = create<ConnectorStore>()((set, get) => ({
 
   clearRunAndProposalErrors: () =>
     set({ runError: null, runRequestId: null, proposalError: null }),
+
+  proposeTemplateFromSelection: (reportingLevel = null) => {
+    const { connectorId, selectedFields, fields, manifest } = get()
+    if (!connectorId || selectedFields.length === 0) return
+
+    set({ isProposing: true, proposalError: null, runError: null, runRequestId: null })
+
+    try {
+      const proposal = IS_MOCK
+        ? generateMockTemplate(connectorId, selectedFields, reportingLevel)
+        : buildTemplateProposalFromSelection({
+            connectorId,
+            selectedIds: selectedFields,
+            fields,
+            manifest,
+            reportingLevel,
+          })
+      set({
+        templateProposal: {
+          ...proposal,
+          columns: dedupeTemplateColumnsByFieldName(proposal.columns),
+        },
+        isProposing: false,
+        runResult: null,
+      })
+    } catch (e) {
+      set({
+        proposalError: e instanceof Error ? e.message : "Could not build template",
+        isProposing: false,
+      })
+    }
+  },
 
   runPipeline: async () => {
     const { connectorId, selectedFields, sessionId, params } = get()

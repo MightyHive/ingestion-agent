@@ -18,7 +18,14 @@ export default function DataExportPage() {
       gcsPrefix: "",
     },
     step2: { platform: "", templateId: "", credentialIds: [] as string[], tableNames: {} as Record<string, string> },
-    step3: { frequency: "daily", time: "00:00", scheduled: false, refreshWindowDays: undefined as number | undefined },
+    step3: {
+      frequency: "daily",
+      time: "00:00",
+      scheduled: false,
+      refreshWindowDays: undefined as number | undefined,
+      dayOfWeek: 1,
+      dayOfMonth: 1,
+    },
   })
 
   const onStep1Update = useCallback((data: Record<string, unknown>) => {

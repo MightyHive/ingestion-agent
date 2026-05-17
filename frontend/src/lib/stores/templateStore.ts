@@ -5,6 +5,8 @@ import type { TemplateColumn } from "@/lib/stores/connectorStore"
 export interface SavedTemplate {
   id: string
   tableName: string
+  /** Catalog manifest id (e.g. meta_facebook_ad_insights). Required for Export Planner runs. */
+  manifestId?: string
   platform: string
   endpoint: string
   columns: TemplateColumn[]

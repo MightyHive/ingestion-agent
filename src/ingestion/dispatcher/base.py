@@ -59,7 +59,7 @@ class ConnectorResponse:
     """
 
     status: str
-    code: int
+    code: int | str
     records: Any
     meta: dict[str, Any] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
@@ -77,7 +77,7 @@ class ConnectorResponse:
             )
         return cls(
             status=str(raw.get("status", "unknown")),
-            code=int(raw.get("code", 0)) if raw.get("code") is not None else 0,
+            code=_normalize_connector_code(raw.get("code", 0)),
             records=raw.get("records"),
             meta=dict(raw.get("meta") or {}),
             errors=list(raw.get("errors") or []),
@@ -87,6 +87,26 @@ class ConnectorResponse:
 
 class BackendError(Exception):
     """Wrapper for any failure inside a backend (import, network, contract)."""
+
+
+def _normalize_connector_code(raw: Any) -> int | str:
+    """Connectors may return numeric HTTP-style codes or string tokens (e.g. FETCH_OK)."""
+    if raw is None:
+        return 0
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str):
+        stripped = raw.strip()
+        if not stripped:
+            return 0
+        try:
+            return int(stripped)
+        except ValueError:
+            return stripped
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return str(raw)
 
 
 class BackendBase(ABC):

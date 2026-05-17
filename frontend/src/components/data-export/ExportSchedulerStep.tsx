@@ -4,6 +4,9 @@ import { useState } from "react"
 import { useExportJobStore } from "@/lib/stores/exportJobStore"
 import { useTemplateStore } from "@/lib/stores/templateStore"
 import { cn } from "@/lib/utils"
+import type { ExportSchedule } from "@/lib/export-schedule"
+import { formatScheduleSummary } from "@/lib/export-schedule"
+import ScheduleFields from "@/components/data-export/ScheduleFields"
 
 const FREQUENCIES = [
   { id: "hourly",  label: "Hourly",  icon: "schedule" },
@@ -30,7 +33,14 @@ interface ExportFormData {
     gcsPrefix: string
   }
   step2: { platform: string; templateId: string; credentialIds: string[]; tableNames: Record<string, string> }
-  step3: { frequency: string; time: string; scheduled: boolean; refreshWindowDays?: number }
+  step3: {
+    frequency: string
+    time: string
+    scheduled: boolean
+    refreshWindowDays?: number
+    dayOfWeek?: number
+    dayOfMonth?: number
+  }
 }
 
 interface Props {
@@ -54,6 +64,24 @@ export default function ExportSchedulerStep({ data, onUpdate }: Props) {
     data.step2.credentialIds.length > 0 &&
     data.step2.credentialIds.every((credentialId) => (data.step2.tableNames[credentialId] ?? "").trim() !== "")
 
+  const buildSchedule = (): ExportSchedule => {
+    const schedule: ExportSchedule = {
+      frequency: data.step3.frequency,
+      time: data.step3.time,
+    }
+    if (data.step3.frequency === "weekly") {
+      schedule.dayOfWeek = data.step3.dayOfWeek ?? 1
+    }
+    if (data.step3.frequency === "monthly") {
+      schedule.dayOfMonth = data.step3.dayOfMonth ?? 1
+    }
+    return schedule
+  }
+
+  function patchSchedule(patch: Partial<ExportSchedule>) {
+    onUpdate(patch)
+  }
+
   async function handleSchedule() {
     setSaving(true)
     await new Promise((r) => setTimeout(r, 1200))
@@ -64,10 +92,7 @@ export default function ExportSchedulerStep({ data, onUpdate }: Props) {
       credentialIds:        data.step2.credentialIds,
       tableNames:           data.step2.tableNames,
       ddl:                  selectedTemplate?.ddl ?? "",
-      schedule: {
-        frequency: data.step3.frequency,
-        time:      data.step3.time,
-      },
+      schedule: buildSchedule(),
       refreshWindowDays,
     })
     onUpdate({ scheduled: true })
@@ -138,7 +163,13 @@ export default function ExportSchedulerStep({ data, onUpdate }: Props) {
             <button
               key={f.id}
               type="button"
-              onClick={() => onUpdate({ frequency: f.id })}
+              onClick={() =>
+                onUpdate({
+                  frequency: f.id,
+                  ...(f.id === "weekly" ? { dayOfWeek: data.step3.dayOfWeek ?? 1 } : {}),
+                  ...(f.id === "monthly" ? { dayOfMonth: data.step3.dayOfMonth ?? 1 } : {}),
+                })
+              }
               className={cn(
                 "flex flex-col items-center gap-2 p-4 rounded-xl border font-semibold text-sm transition-all",
                 data.step3.frequency === f.id
@@ -153,18 +184,7 @@ export default function ExportSchedulerStep({ data, onUpdate }: Props) {
         </div>
       </div>
 
-      {/* Time */}
-      <div className="flex flex-col gap-1.5">
-        <label className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider">
-          Start time (UTC)
-        </label>
-        <input
-          type="time"
-          value={data.step3.time}
-          onChange={(e) => onUpdate({ time: e.target.value })}
-          className="w-40 px-3 py-2 border border-border rounded-lg bg-background text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-        />
-      </div>
+      <ScheduleFields schedule={buildSchedule()} onChange={patchSchedule} />
 
       {/* Refresh window */}
       <div className="flex flex-col gap-1.5">
@@ -196,7 +216,7 @@ export default function ExportSchedulerStep({ data, onUpdate }: Props) {
           <div>
             <p className="font-semibold">Export scheduled</p>
             <p className="text-xs mt-0.5">
-              Runs <strong>{data.step3.frequency}</strong> at <strong>{data.step3.time} UTC</strong> · Refresh window:{" "}
+              {formatScheduleSummary(buildSchedule())} · Refresh window:{" "}
               <strong>{refreshWindowDays}d</strong> · Tables: <strong>{destinationTables.length}</strong>
             </p>
           </div>

@@ -12,17 +12,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { useExportJobStore, type ExportJob } from "@/lib/stores/exportJobStore"
+import RunPreviewDialog from "@/components/export-planner/RunPreviewDialog"
+import ScheduleFields from "@/components/data-export/ScheduleFields"
+import { runTemplateIngestion, type TemplateRunResult } from "@/lib/export-ingestion"
+import { formatScheduleSummary, type ExportSchedule } from "@/lib/export-schedule"
+import { useExportJobStore, type ExportJob, type ExportRunRecord } from "@/lib/stores/exportJobStore"
 import { useTemplateStore } from "@/lib/stores/templateStore"
 
 const FREQUENCIES = ["hourly", "daily", "weekly", "monthly"]
-
-const FREQ_MS: Record<string, number> = {
-  hourly: 3_600_000,
-  daily: 86_400_000,
-  weekly: 604_800_000,
-  monthly: 2_592_000_000,
-}
 
 function platformRefreshDefault(platform: string, templateName = ""): number {
   const s = `${platform} ${templateName}`.toLowerCase()
@@ -32,30 +29,40 @@ function platformRefreshDefault(platform: string, templateName = ""): number {
   return 1
 }
 
-function seededRand(seed: string, i: number) {
-  let h = 0
-  for (let c = 0; c < seed.length; c++) h = (Math.imul(31, h) + seed.charCodeAt(c)) | 0
-  h = Math.imul(h ^ (i + 1), 2654435761) | 0
-  return Math.abs(h % 1000) / 1000
-}
+type ActionNote = { kind: "success" | "error"; message: string }
 
-function generateRuns(job: ExportJob, n = 7) {
-  const ms = FREQ_MS[job.schedule.frequency.toLowerCase()] ?? FREQ_MS.daily
-  return Array.from({ length: n }, (_, i) => ({
-    id: `${job.id}-r${i}`,
-    date: new Date(Date.now() - ms * (i + 1)),
-    status: seededRand(job.id, i) > 0.12 ? ("success" as const) : ("failed" as const),
-    duration: Math.round(4 + seededRand(job.id + "d", i) * 28),
-    rows: seededRand(job.id, i) > 0.12 ? Math.round(800 + seededRand(job.id + "r", i) * 48000) : 0,
-  }))
+function runsForJob(job: ExportJob): Array<{
+  id: string
+  date: Date
+  status: "success" | "failed"
+  duration: number
+  rows: number
+  requestId?: string
+  error?: string
+  hasPreview?: boolean
+}> {
+  const stored = job.lastRuns ?? []
+  if (stored.length > 0) {
+    return stored.map((r) => ({
+      id: r.id,
+      date: new Date(r.ranAt),
+      status: r.status,
+      duration: r.durationSec,
+      rows: r.rowCount,
+      requestId: r.requestId,
+      error: r.error,
+      hasPreview: Boolean(r.preview?.rows?.length),
+    }))
+  }
+  return []
 }
 
 export default function ExportPlannerPage() {
-  const { jobs, deleteJob, updateJob } = useExportJobStore()
+  const { jobs, deleteJob, updateJob, appendRun } = useExportJobStore()
   const { templates } = useTemplateStore()
 
   const [runningId, setRunningId] = useState<string | null>(null)
-  const [actionNote, setActionNote] = useState<string | null>(null)
+  const [actionNote, setActionNote] = useState<ActionNote | null>(null)
   const [rerunningId, setRerunningId] = useState<string | null>(null)
 
   // Backfill
@@ -70,6 +77,14 @@ export default function ExportPlannerPage() {
   const [editFreq, setEditFreq] = useState("")
   const [editTime, setEditTime] = useState("")
   const [editRefreshWindow, setEditRefreshWindow] = useState<number>(1)
+  const [editSchedule, setEditSchedule] = useState<ExportSchedule>({
+    frequency: "daily",
+    time: "00:00",
+  })
+
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const [previewResult, setPreviewResult] = useState<TemplateRunResult | null>(null)
+  const [previewTemplateName, setPreviewTemplateName] = useState("")
 
   // Last runs expanded per job
   const [expandedJobs, setExpandedJobs] = useState<Set<string>>(new Set())
@@ -83,12 +98,95 @@ export default function ExportPlannerPage() {
     return templates.find((t) => t.id === templateId)
   }
 
+  function openPreview(result: TemplateRunResult, templateName: string) {
+    setPreviewResult(result)
+    setPreviewTemplateName(templateName)
+    setPreviewOpen(true)
+  }
+
+  function previewFromRunRecord(run: ExportRunRecord, templateName: string, rowCount: number) {
+    if (!run.preview) return
+    openPreview(
+      {
+        row_count: rowCount,
+        target_table: run.preview.targetTable,
+        requestId: run.requestId ?? null,
+        errors: [],
+        columns: run.preview.columns,
+        rows_preview: run.preview.rows,
+      },
+      templateName
+    )
+  }
+
+  async function executeRun(
+    job: ExportJob,
+    options: Parameters<typeof runTemplateIngestion>[1]
+  ): Promise<TemplateRunResult | null> {
+    const tmpl = getTemplate(job.templateId)
+    if (!tmpl) {
+      setActionNote({ kind: "error", message: "Template not found. Re-create the export from Data Export." })
+      return null
+    }
+
+    const t0 = performance.now()
+    try {
+      const result = await runTemplateIngestion(tmpl, options)
+      const durationSec = Math.max(1, Math.round((performance.now() - t0) / 1000))
+      const runPayload: Omit<ExportRunRecord, "id" | "ranAt"> = {
+        status: "success",
+        durationSec,
+        rowCount: result.row_count,
+        requestId: result.requestId ?? undefined,
+        preview:
+          result.rows_preview.length > 0
+            ? {
+                columns: result.columns,
+                rows: result.rows_preview,
+                targetTable: result.target_table,
+              }
+            : undefined,
+      }
+      appendRun(job.id, runPayload)
+      const warn =
+        result.errors.length > 0 ? ` Warnings: ${result.errors.slice(0, 2).join("; ")}` : ""
+      setActionNote({
+        kind: "success",
+        message: `Run OK · ${result.row_count.toLocaleString()} rows · ${tmpl.tableName}${warn}`,
+      })
+      openPreview(result, tmpl.tableName)
+      return result
+    } catch (e) {
+      const durationSec = Math.max(1, Math.round((performance.now() - t0) / 1000))
+      const err = e as Error & { requestId?: string | null }
+      const message = err instanceof Error ? err.message : "Run failed"
+      appendRun(job.id, {
+        status: "failed",
+        durationSec,
+        rowCount: 0,
+        requestId: err.requestId ?? undefined,
+        error: message,
+      })
+      setActionNote({
+        kind: "error",
+        message: err.requestId ? `${message} (Request-ID: ${err.requestId})` : message,
+      })
+      return null
+    }
+  }
+
   async function handleRunNow(job: ExportJob) {
     setRunningId(job.id)
     setActionNote(null)
-    await new Promise((r) => setTimeout(r, 900))
-    setRunningId(null)
-    setActionNote(`Run queued: ${getTemplate(job.templateId)?.tableName ?? job.templateId}`)
+    const refreshDays = job.refreshWindowDays ?? platformRefreshDefault(
+      getTemplate(job.templateId)?.platform ?? "",
+      getTemplate(job.templateId)?.tableName ?? ""
+    )
+    try {
+      await executeRun(job, { mode: "refresh", refreshWindowDays: refreshDays })
+    } finally {
+      setRunningId(null)
+    }
   }
 
   function openBackfill(job: ExportJob) {
@@ -107,20 +205,23 @@ export default function ExportPlannerPage() {
     setBackfillError(null)
   }
 
-  function handleBackfillSubmit() {
+  async function handleBackfillSubmit() {
     if (!backfillFor) return
     if (!backfillStart || !backfillEnd) { setBackfillError("Choose a start and end date."); return }
     if (backfillStart > backfillEnd) { setBackfillError("Start must be before or equal to end."); return }
     setBackfillBusy(true)
+    setActionNote(null)
     const job = backfillFor
-    const name = getTemplate(job.templateId)?.tableName ?? job.templateId
-    const t0 = backfillStart
-    const t1 = backfillEnd
-    window.setTimeout(() => {
-      setBackfillBusy(false)
-      setActionNote(`Backfill queued: ${name} · ${t0} → ${t1}`)
+    try {
+      await executeRun(job, {
+        mode: "backfill",
+        dateStart: backfillStart,
+        dateEnd: backfillEnd,
+      })
       closeBackfill()
-    }, 800)
+    } finally {
+      setBackfillBusy(false)
+    }
   }
 
   function openEdit(job: ExportJob) {
@@ -128,6 +229,7 @@ export default function ExportPlannerPage() {
     setEditFor(job)
     setEditFreq(job.schedule.frequency.toLowerCase())
     setEditTime(job.schedule.time)
+    setEditSchedule({ ...job.schedule })
     setEditRefreshWindow(
       job.refreshWindowDays ?? platformRefreshDefault(tmpl?.platform ?? "", tmpl?.tableName ?? "")
     )
@@ -137,11 +239,20 @@ export default function ExportPlannerPage() {
 
   function handleEditSave() {
     if (!editFor) return
+    const schedule: ExportSchedule = {
+      frequency: editFreq,
+      time: editTime,
+      ...(editFreq === "weekly" ? { dayOfWeek: editSchedule.dayOfWeek ?? 1 } : {}),
+      ...(editFreq === "monthly" ? { dayOfMonth: editSchedule.dayOfMonth ?? 1 } : {}),
+    }
     updateJob(editFor.id, {
-      schedule: { frequency: editFreq, time: editTime },
+      schedule,
       refreshWindowDays: editRefreshWindow,
     })
-    setActionNote(`Schedule updated: ${editFreq} @ ${editTime} UTC · ${editRefreshWindow}d refresh window`)
+    setActionNote({
+      kind: "success",
+      message: `${formatScheduleSummary(schedule)} · ${editRefreshWindow}d refresh window`,
+    })
     closeEdit()
   }
 
@@ -153,11 +264,18 @@ export default function ExportPlannerPage() {
     })
   }
 
-  async function handleRerun(runId: string, name: string, date: Date) {
+  async function handleRerun(job: ExportJob, runId: string) {
     setRerunningId(runId)
-    await new Promise((r) => setTimeout(r, 800))
-    setRerunningId(null)
-    setActionNote(`Re-run queued: ${name} (${date.toLocaleDateString()})`)
+    setActionNote(null)
+    const refreshDays = job.refreshWindowDays ?? platformRefreshDefault(
+      getTemplate(job.templateId)?.platform ?? "",
+      getTemplate(job.templateId)?.tableName ?? ""
+    )
+    try {
+      await executeRun(job, { mode: "refresh", refreshWindowDays: refreshDays })
+    } finally {
+      setRerunningId(null)
+    }
   }
 
   return (
@@ -179,8 +297,15 @@ export default function ExportPlannerPage() {
       </div>
 
       {actionNote && (
-        <p className="text-sm rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-900 px-4 py-2">
-          {actionNote}
+        <p
+          className={cn(
+            "text-sm rounded-lg border px-4 py-2",
+            actionNote.kind === "success"
+              ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+              : "border-red-200 bg-red-50 text-red-900"
+          )}
+        >
+          {actionNote.message}
         </p>
       )}
 
@@ -204,7 +329,7 @@ export default function ExportPlannerPage() {
               const fieldCount = tmpl?.columns.length ?? 0
               const refreshDays = job.refreshWindowDays ?? platformRefreshDefault(platform, tmpl?.tableName ?? "")
               const expanded = expandedJobs.has(job.id)
-              const runs = generateRuns(job)
+              const runs = runsForJob(job)
 
               return (
                 <div key={job.id} className="bg-white rounded-2xl border p-5 flex flex-col gap-4">
@@ -214,8 +339,7 @@ export default function ExportPlannerPage() {
                       <div className="font-semibold text-base leading-tight">{name}</div>
                       <div className="text-sm text-muted-foreground mt-1">
                         {fieldCount} {fieldCount === 1 ? "field" : "fields"} &bull;{" "}
-                        {job.schedule.frequency.charAt(0).toUpperCase() + job.schedule.frequency.slice(1)}{" "}
-                        @ {job.schedule.time} UTC
+                        {formatScheduleSummary(job.schedule)}
                         {platform && <span className="ml-2">&bull; {platform}</span>}
                       </div>
                       <div className="text-xs text-muted-foreground mt-0.5">
@@ -239,7 +363,7 @@ export default function ExportPlannerPage() {
                       className="h-8"
                       style={{ backgroundColor: "#5c27fe", color: "white" }}
                     >
-                      {runningId === job.id ? "…" : "Run now"}
+                      {runningId === job.id ? "Running…" : "Run now"}
                     </Button>
                     <Button size="sm" variant="outline" className="h-8" onClick={() => openBackfill(job)}>
                       Backfill
@@ -269,11 +393,17 @@ export default function ExportPlannerPage() {
                         {expanded ? "expand_less" : "expand_more"}
                       </span>
                       Last runs
+                      {runs.length > 0 ? ` (${runs.length})` : ""}
                     </button>
 
                     {expanded && (
                       <div className="mt-2 rounded-xl border overflow-hidden">
-                        {runs.map((run) => (
+                        {runs.length === 0 ? (
+                          <p className="px-3 py-4 text-xs text-muted-foreground">
+                            No runs yet. Use Run now to fetch data from the connector.
+                          </p>
+                        ) : (
+                        runs.map((run) => (
                           <div
                             key={run.id}
                             className="flex items-center gap-3 px-3 py-2 text-xs border-b last:border-0 hover:bg-muted/30"
@@ -290,20 +420,36 @@ export default function ExportPlannerPage() {
                               {run.status === "success" ? "OK" : "Failed"}
                             </span>
                             <span className="text-muted-foreground w-[34px] shrink-0">{run.duration}s</span>
-                            <span className="text-muted-foreground flex-1">
-                              {run.status === "success" ? `${run.rows.toLocaleString()} rows` : "—"}
+                            <span className="text-muted-foreground flex-1 min-w-0 truncate">
+                              {run.status === "success"
+                                ? `${run.rows.toLocaleString()} rows`
+                                : run.error ?? "—"}
                             </span>
+                            {run.hasPreview ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-6 px-2 text-[11px] shrink-0"
+                                onClick={() => {
+                                  const stored = job.lastRuns?.find((r) => r.id === run.id)
+                                  if (stored) previewFromRunRecord(stored, name, run.rows)
+                                }}
+                              >
+                                Sample
+                              </Button>
+                            ) : null}
                             <Button
                               size="sm"
                               variant="ghost"
                               className="h-6 px-2 text-[11px] shrink-0"
-                              disabled={rerunningId === run.id}
-                              onClick={() => void handleRerun(run.id, name, run.date)}
+                              disabled={rerunningId === run.id || runningId === job.id}
+                              onClick={() => void handleRerun(job, run.id)}
                             >
                               {rerunningId === run.id ? "…" : "Re-run"}
                             </Button>
                           </div>
-                        ))}
+                        ))
+                        )}
                       </div>
                     )}
                   </div>
@@ -341,8 +487,8 @@ export default function ExportPlannerPage() {
               {backfillError && <p className="text-sm text-destructive">{backfillError}</p>}
               <DialogFooter>
                 <Button variant="outline" onClick={closeBackfill}>Cancel</Button>
-                <Button className="bg-[#5c27fe]" disabled={backfillBusy} onClick={handleBackfillSubmit}>
-                  {backfillBusy ? "Queueing…" : "Queue backfill"}
+                <Button className="bg-[#5c27fe]" disabled={backfillBusy} onClick={() => void handleBackfillSubmit()}>
+                  {backfillBusy ? "Running…" : "Run backfill"}
                 </Button>
               </DialogFooter>
             </>
@@ -367,7 +513,16 @@ export default function ExportPlannerPage() {
                   <select
                     className="w-full border rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-ring"
                     value={editFreq}
-                    onChange={(e) => setEditFreq(e.target.value)}
+                    onChange={(e) => {
+                      const next = e.target.value
+                      setEditFreq(next)
+                      setEditSchedule((s) => ({
+                        ...s,
+                        frequency: next,
+                        ...(next === "weekly" && s.dayOfWeek == null ? { dayOfWeek: 1 } : {}),
+                        ...(next === "monthly" && s.dayOfMonth == null ? { dayOfMonth: 1 } : {}),
+                      }))
+                    }}
                   >
                     {FREQUENCIES.map((f) => (
                       <option key={f} value={f}>
@@ -376,10 +531,24 @@ export default function ExportPlannerPage() {
                     ))}
                   </select>
                 </div>
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-muted-foreground">Time (UTC)</label>
-                  <Input type="time" value={editTime} onChange={(e) => setEditTime(e.target.value)} />
-                </div>
+                <ScheduleFields
+                  schedule={{
+                    frequency: editFreq,
+                    time: editTime,
+                    dayOfWeek: editSchedule.dayOfWeek,
+                    dayOfMonth: editSchedule.dayOfMonth,
+                  }}
+                  labelClass="text-xs font-medium text-muted-foreground"
+                  onChange={(patch) => {
+                    if (patch.time != null) setEditTime(patch.time)
+                    setEditSchedule((s) => ({
+                      ...s,
+                      ...patch,
+                      frequency: editFreq,
+                      time: patch.time ?? editTime,
+                    }))
+                  }}
+                />
                 <div className="space-y-1.5">
                   <label className="text-xs font-medium text-muted-foreground">
                     Refresh window (days)
@@ -404,6 +573,13 @@ export default function ExportPlannerPage() {
           )}
         </DialogContent>
       </Dialog>
+
+      <RunPreviewDialog
+        open={previewOpen}
+        onOpenChange={setPreviewOpen}
+        result={previewResult}
+        templateName={previewTemplateName}
+      />
     </div>
   )
 }
