@@ -42,8 +42,8 @@ function ConnectionsTable({
       <TableHeader>
         <TableRow>
           <TableHead>Project</TableHead>
-          <TableHead className="font-mono text-xs">ID</TableHead>
-          <TableHead className="font-mono text-xs">Region</TableHead>
+          <TableHead>ID</TableHead>
+          <TableHead>Region</TableHead>
           <TableHead>Service account</TableHead>
           <TableHead className="w-14 text-right" />
         </TableRow>

@@ -134,6 +134,88 @@ Alternativa de ventana: `date_start` + `date_stop` (o `since`/`until`) según `o
 
 Requerido por `auth.context_required` del manifest de Facebook.
 
+### 3.6 Agregar DV360 (checklist)
+
+**Estado hoy:** el módulo `connectors-library/dv360/reports/dv360_reports.py` implementa `fetch(params, context)`, pero el manifest en catálogo y el loop UI end-to-end están pendientes (ver `docs/migration-plan.md` — Fase 6). Meta es el conector de referencia ya integrado.
+
+El mismo modelo aplica: **`params`** vienen del template en el run; **`context`** viene del tenant (o env vars en dev). La Credentials Library (`DV360` en UI) sigue siendo organizativa hasta que exista resolver multi-tenant / Secret Manager.
+
+#### Contexto en `tenants.json` (DV360)
+
+| Clave en `context` | Obligatorio | Uso |
+|--------------------|-------------|-----|
+| `query_id` | **Sí** | ID del query/reporte ya creado en la UI de DV360 |
+| `service_account_info` | Uno de estos | Objeto JSON de la service account (recomendado en tenant) |
+| `service_account_json` | o estos | Mismo JSON como string |
+| `access_token` | legacy | Bearer OAuth con scope Bid Manager (alternativa) |
+
+Orden de resolución de credenciales en el conector (si no están en el tenant):
+
+1. `context.service_account_info`
+2. `context.service_account_json`
+3. `DV360_SERVICE_ACCOUNT_JSON` / `GOOGLE_SERVICE_ACCOUNT_JSON`
+4. variables `GOOGLE_SERVICE_ACCOUNT_*`
+5. `context.access_token` / `DV360_ACCESS_TOKEN`
+
+**Scope Google:** `https://www.googleapis.com/auth/doubleclickbidmanager`
+
+Ejemplo de tenant `dev` con Meta + DV360 en el mismo `context` (solo se validan las claves que pida el manifest de cada run):
+
+```json
+{
+  "tenants": {
+    "dev": {
+      "gcp_project": "tu-proyecto-gcp",
+      "service_account": "mds-runner@tu-proyecto.iam.gserviceaccount.com",
+      "context": {
+        "ad_account_id": "TU_META_AD_ACCOUNT",
+        "access_token": "TU_META_TOKEN",
+
+        "query_id": "TU_QUERY_ID_DV360",
+        "service_account_json": "{\"type\":\"service_account\",\"project_id\":\"...\", ...}"
+      }
+    }
+  }
+}
+```
+
+Cuando exista el manifest DV360, `auth.context_required` probablemente incluirá al menos `query_id`. Las credenciales de la SA pueden quedar fuera de `context_required` en dev (env vars) pero en producción deberían vivir en Secret Manager (Fase 5).
+
+**`params` típicos en el run** (desde template / manifest, no del tenant):
+
+- `data_range` — obligatorio (`LAST_7_DAYS`, `CUSTOM_DATES`, etc.)
+- `customStartDate` / `customEndDate` — si `data_range` = `CUSTOM_DATES` (formato `YYYYMMDD`)
+- `fields` — allow-list de columnas del CSV
+
+#### Fuera del repo (Google + DV360)
+
+1. Proyecto GCP + **service account** con acceso a Display & Video 360 / Bid Manager API.
+2. En DV360: crear el **query/report** en la UI y copiar su **`query_id`** al tenant.
+3. Conceder a la SA permisos sobre la cuenta DV360 del cliente.
+
+#### Checklist por capa
+
+```text
+Google Cloud + DV360 UI     →  query_id + SA con permisos
+         ↓
+config/tenants.json          →  context.query_id + credenciales SA
+         ↓
+MDS_TENANTS_FILE + dev-api  →  tenant "dev" (hardcodeado en api.py hoy)
+         ↓
+connectors-library           →  manifest.json DV360 + bump submodule
+         ↓
+GET /api/catalog             →  Data Connection elige conector, arma template local
+         ↓
+Export Planner               →  POST /api/run (params del template + context del tenant)
+```
+
+| Capa | Qué hacer |
+|------|-----------|
+| **Backend** | Publicar `manifest.json` en `connectors-library` (`platform: "dv360"`, `params`, `auth.context_required`); bump submodule; smoke test `POST /api/run`. |
+| **Tenant** | Añadir `query_id` + `service_account_json` (o `service_account_info`) en `context` de `config/tenants.json`. |
+| **Frontend** | Sin cambios estructurales: catálogo API, `platform-match` ya mapea `dv360` ↔ `DV360`; guardar template con `manifest.platform`; run desde Export Planner vía `runTemplateIngestion`. |
+| **UI credenciales** | Entrada DV360 en Credentials Library (documentación); **no** alimenta el run hasta cablear tenant resolver. |
+
 ---
 
 ## 4. Frontend — integración API
@@ -241,6 +323,7 @@ El cron que dispare runs programados en backend **aún no existe**; es modelo + 
 | **Scheduler / cron** | Schedule solo en frontend (localStorage). |
 | **Multi-tenant HTTP** | Siempre `dev`; sin `X-Tenant-Id`. |
 | **Credenciales desde UI** | No se pasan a `/api/run`; solo `tenants.json`. |
+| **DV360 en catálogo** | Código en `connectors-library`; manifest + run E2E pendientes (Fase 6). |
 | **HTTPBackend / Cloud Function** | Solo `LocalBackend` (Fase 5). |
 
 ### 6.2 APIs útiles más adelante
@@ -269,4 +352,5 @@ Ninguna es estrictamente necesaria para el loop **template → run → preview**
 
 - `docs/INTEGRATION_PLAN.md` — plan original (Template step pedía `/api/run`; producto lo movió a Export Planner).
 - `docs/api.md` — contrato HTTP.
-- `connectors-library/meta/facebook/manifest.json` — params y `context_required`.
+- `connectors-library/meta/facebook/manifest.json` — params y `context_required` (Meta).
+- `connectors-library/dv360/reports/dv360_reports.py` — `fetch(params, context)` y auth DV360.

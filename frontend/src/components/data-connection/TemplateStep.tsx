@@ -361,22 +361,28 @@ function FieldMappingCard({ proposal }: { proposal: TemplateProposal }) {
               <th className="text-left py-2 px-2 text-xs font-semibold text-on-surface-variant uppercase tracking-wider">
                 Mode
               </th>
+              <th className="text-left py-2 px-2 text-xs font-semibold text-on-surface-variant uppercase tracking-wider">
+                Description
+              </th>
             </tr>
           </thead>
           <tbody>
             {proposal.columns.map((col) => (
               <tr key={col.original} className="border-b border-border/50 hover:bg-muted/30 transition-colors">
                 <td className="py-2 px-2">
-                  <code className="text-xs font-mono text-on-surface">{col.original}</code>
+                  <span className="text-xs text-on-surface-variant">{col.original}</span>
                 </td>
                 <td className="py-2 px-2">
-                  <code className="text-xs font-mono text-on-surface-variant">{col.name}</code>
+                  <span className="text-xs text-on-surface-variant">{col.name}</span>
                 </td>
                 <td className="py-2 px-2">
-                  <code className="text-xs font-mono text-on-surface-variant">{col.type}</code>
+                  <span className="text-xs text-on-surface-variant">{col.type}</span>
                 </td>
                 <td className="py-2 px-2">
-                  <code className="text-xs font-mono text-on-surface-variant">{col.mode}</code>
+                  <span className="text-xs text-on-surface-variant">{col.mode}</span>
+                </td>
+                <td className="py-2 px-2 max-w-xs">
+                  <span className="text-xs text-on-surface-variant">{col.description ?? "—"}</span>
                 </td>
               </tr>
             ))}
