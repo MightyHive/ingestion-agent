@@ -32,6 +32,10 @@ RUN_MODE=api uvicorn api:app --reload --host 0.0.0.0 --port 8000
 | POST   | `/api/run`                              | ✅ estable (v1.0)             | Único endpoint de ingesta. Sync JSON. Reemplazó a `/api/chat` + `/api/submit_input`. |
 | GET    | `/api/catalog`                          | ✅ estable (v1.0)             | Listing del catálogo. Reemplazó a `/api/templates`. |
 | GET    | `/api/catalog/{id}`                     | ✅ estable (v1.0)             | Manifest completo de un conector. |
+| PUT    | `/api/credentials/{provider}/{connection_id}` | ✅ estable (v1.0)       | Upsert de conexión: escribe/rota secret en GCP SM + metadata en DB. |
+| GET    | `/api/credentials`                      | ✅ estable (v1.0)             | Lista conexiones del tenant (`X-Tenant-Id`). |
+| GET    | `/api/credentials/{connection_id}`      | ✅ estable (v1.0)             | Detalle de conexión del tenant. |
+| PATCH  | `/api/credentials/{connection_id}/status` | ✅ estable (v1.0)          | Actualiza status (`active|inactive|revoked`). |
 
 > ✅ = estable, parte del contrato a largo plazo.
 >
@@ -301,6 +305,73 @@ Estos endpoints **ya no existen** en el backend a partir de Fase 4 (2026-05-11).
 | `GET /api/sessions/{session_id}/history`| (sin sucesor)                        | El flujo determinístico no tiene estado de sesión. Si querés persistir historial en el frontend, hacelo client-side. |
 
 Si te encontrás con un caso que dependía del comportamiento SSE / `ui_trigger` viejo y no ves cómo modelarlo con `/api/run`, decime y lo pensamos.
+
+---
+
+### 3.4 Endpoints de credenciales (`/api/credentials/*`)
+
+Todos los endpoints de credenciales requieren header `X-Tenant-Id` y devuelven
+metadata solamente (nunca el payload secreto).
+
+#### `PUT /api/credentials/{provider}/{connection_id}`
+
+Upsert de conexión por `provider` + `connection_id` (estable del lado cliente):
+
+- si no existe la fila en DB: crea secret en Secret Manager (`monks-mds-dev`), agrega versión y crea metadata.
+- si ya existe: agrega nueva versión (rotate) y actualiza metadata.
+
+Body:
+
+```json
+{
+  "payload": {"access_token": "..."}, 
+  "name": "Meta production"
+}
+```
+
+Status:
+- `200` upsert OK.
+- `400` payload inválido o falta `X-Tenant-Id`.
+- `502` error de Secret Manager.
+- `500` error inesperado.
+
+#### `GET /api/credentials`
+
+Lista conexiones del tenant. Query opcional: `status=active|inactive|revoked`.
+
+Response 200:
+
+```json
+{
+  "count": 1,
+  "connections": [
+    {
+      "connection_id": "conn-1",
+      "tenant_id": "tenant-a",
+      "provider": "meta",
+      "secret_id": "tenant-a-meta-conn-1",
+      "status": "active",
+      "name": "Meta production",
+      "created_at": "2026-05-19T18:00:00+00:00",
+      "updated_at": "2026-05-19T18:00:00+00:00"
+    }
+  ]
+}
+```
+
+#### `GET /api/credentials/{connection_id}`
+
+Devuelve una conexión del tenant o `404` si no existe para ese tenant.
+
+#### `PATCH /api/credentials/{connection_id}/status`
+
+Body:
+
+```json
+{"status": "inactive"}
+```
+
+Actualiza el estado de la conexión (tenant-scoped).
 
 ---
 

@@ -32,12 +32,19 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from credentials import service as credentials_service
+from credentials.exceptions import (
+    ConnectionNotFoundError,
+    SecretManagerError,
+    SecretPayloadError,
+)
+from credentials.schemas import ConnectionRecord, ConnectionStatus
 from ingestion import build_graph
 from ingestion.manifest import (
     CATALOG_API_VERSION,
@@ -87,6 +94,38 @@ class RunRequest(BaseModel):
     )
 
 
+class CredentialUpsertRequest(BaseModel):
+    """Request body for creating/updating one credential connection."""
+
+    payload: dict[str, Any] | str = Field(
+        ...,
+        description="Secret payload (token string or JSON object).",
+    )
+    name: str | None = Field(
+        default=None,
+        description="Optional display name for this connection.",
+    )
+
+
+class CredentialStatusPatchRequest(BaseModel):
+    """Request body for updating lifecycle status."""
+
+    status: ConnectionStatus
+
+
+class CredentialResponse(BaseModel):
+    """Response model for connection metadata (no secret payload)."""
+
+    connection_id: str
+    tenant_id: str
+    provider: str
+    secret_id: str
+    status: ConnectionStatus
+    name: str | None = None
+    created_at: str
+    updated_at: str
+
+
 # ---------------------------------------------------------------------------
 # Error helpers
 # ---------------------------------------------------------------------------
@@ -131,6 +170,69 @@ def _error_response(
     )
 
 
+def _tenant_or_error(
+    *, request_id: str, tenant_id: str | None
+) -> tuple[str | None, JSONResponse | None]:
+    """Validate tenant header and return either tenant or error response."""
+
+    value = (tenant_id or "").strip()
+    if value:
+        return value, None
+    return None, _error_response(
+        request_id=request_id,
+        status_code=400,
+        error_key="missing_tenant_header",
+        reason="missing or empty X-Tenant-Id header",
+    )
+
+
+def _connection_payload(record: ConnectionRecord) -> dict[str, Any]:
+    """Serialize connection record for API JSON responses."""
+
+    return {
+        "connection_id": record.connection_id,
+        "tenant_id": record.tenant_id,
+        "provider": record.provider,
+        "secret_id": record.secret_id,
+        "status": record.status.value,
+        "name": record.name,
+        "created_at": record.created_at.isoformat(),
+        "updated_at": record.updated_at.isoformat(),
+    }
+
+
+def _credentials_error_response(request_id: str, exc: Exception) -> JSONResponse:
+    """Map credentials domain errors to HTTP status codes."""
+
+    if isinstance(exc, SecretPayloadError):
+        return _error_response(
+            request_id=request_id,
+            status_code=400,
+            error_key="invalid_payload",
+            reason=str(exc),
+        )
+    if isinstance(exc, ConnectionNotFoundError):
+        return _error_response(
+            request_id=request_id,
+            status_code=404,
+            error_key="connection_not_found",
+            reason=str(exc),
+        )
+    if isinstance(exc, SecretManagerError):
+        return _error_response(
+            request_id=request_id,
+            status_code=502,
+            error_key="secret_manager_failed",
+            reason=str(exc),
+        )
+    return _error_response(
+        request_id=request_id,
+        status_code=500,
+        error_key="internal",
+        reason=str(exc) or exc.__class__.__name__,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Exception handlers
 # ---------------------------------------------------------------------------
@@ -157,6 +259,120 @@ async def _request_validation_handler(
 # ---------------------------------------------------------------------------
 # Stable endpoints
 # ---------------------------------------------------------------------------
+
+
+@app.put("/api/credentials/{provider}/{connection_id}")
+async def upsert_credential(
+    provider: str,
+    connection_id: str,
+    request: CredentialUpsertRequest,
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
+) -> JSONResponse:
+    """Create or update one tenant-scoped credential connection."""
+
+    request_id = str(uuid.uuid4())
+    tenant_id, err = _tenant_or_error(request_id=request_id, tenant_id=x_tenant_id)
+    if err is not None:
+        return err
+
+    try:
+        record = credentials_service.upsert_connection(
+            tenant_id=tenant_id,
+            provider=provider,
+            connection_id=connection_id,
+            payload=request.payload,
+            name=request.name,
+        )
+    except Exception as exc:
+        return _credentials_error_response(request_id, exc)
+
+    return JSONResponse(
+        status_code=200,
+        content={"connection": _connection_payload(record)},
+        headers={"X-Request-Id": request_id},
+    )
+
+
+@app.get("/api/credentials")
+async def list_credentials(
+    status: ConnectionStatus | None = None,
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
+) -> JSONResponse:
+    """List connections for one tenant."""
+
+    request_id = str(uuid.uuid4())
+    tenant_id, err = _tenant_or_error(request_id=request_id, tenant_id=x_tenant_id)
+    if err is not None:
+        return err
+
+    try:
+        records = credentials_service.list_connections(tenant_id=tenant_id, status=status)
+    except Exception as exc:
+        return _credentials_error_response(request_id, exc)
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "count": len(records),
+            "connections": [_connection_payload(record) for record in records],
+        },
+        headers={"X-Request-Id": request_id},
+    )
+
+
+@app.get("/api/credentials/{connection_id}")
+async def get_credential(
+    connection_id: str,
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
+) -> JSONResponse:
+    """Get one tenant-scoped connection by id."""
+
+    request_id = str(uuid.uuid4())
+    tenant_id, err = _tenant_or_error(request_id=request_id, tenant_id=x_tenant_id)
+    if err is not None:
+        return err
+
+    try:
+        record = credentials_service.get_connection(
+            tenant_id=tenant_id, connection_id=connection_id
+        )
+    except Exception as exc:
+        return _credentials_error_response(request_id, exc)
+
+    return JSONResponse(
+        status_code=200,
+        content={"connection": _connection_payload(record)},
+        headers={"X-Request-Id": request_id},
+    )
+
+
+@app.patch("/api/credentials/{connection_id}/status")
+async def patch_credential_status(
+    connection_id: str,
+    request: CredentialStatusPatchRequest,
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
+) -> JSONResponse:
+    """Update one tenant-scoped connection status."""
+
+    request_id = str(uuid.uuid4())
+    tenant_id, err = _tenant_or_error(request_id=request_id, tenant_id=x_tenant_id)
+    if err is not None:
+        return err
+
+    try:
+        record = credentials_service.update_connection_status(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            status=request.status,
+        )
+    except Exception as exc:
+        return _credentials_error_response(request_id, exc)
+
+    return JSONResponse(
+        status_code=200,
+        content={"connection": _connection_payload(record)},
+        headers={"X-Request-Id": request_id},
+    )
 
 
 @app.post("/api/run")
