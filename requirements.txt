@@ -16,6 +16,12 @@ langgraph>=0.2.0
 # --- Pydantic v2 (request models, NodeLOL envelope, IngestionState)
 pydantic>=2.7
 
+# --- SQLAlchemy ORM (credentials persistence: SQLite dev, Postgres prod)
+sqlalchemy>=2.0,<3
+
+# --- Secret storage (credentials module, GCP backend)
+google-cloud-secret-manager>=2.20
+
 # --- Manifest validation (Draft 2020-12 support landed in jsonschema >=4.18)
 jsonschema>=4.20
 
