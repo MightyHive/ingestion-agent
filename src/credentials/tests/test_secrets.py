@@ -6,6 +6,7 @@ import pytest
 
 from credentials.exceptions import SecretPayloadError
 from credentials.secrets import (
+    access_secret_payload,
     build_secret_id,
     get_connection_secret,
     revoke_connection_secret,
@@ -109,6 +110,23 @@ def test_rotate_connection_secret_returns_backend_version(
     )
     assert version == "2"
     assert fake.version_calls[-1] == ("dev-meta-rotate-1", b"second")
+
+
+def test_access_secret_payload_reads_by_explicit_refs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeBackend()
+    monkeypatch.setattr("credentials.secrets._reader_backend_for_project", lambda _p: fake)
+    fake.stored["tenant-a-meta-conn-explicit"] = (
+        b'{"access_token":"explicit","ad_account_id":"99"}'
+    )
+
+    payload = access_secret_payload(
+        secret_project_id="monks-mds-dev",
+        secret_id="tenant-a-meta-conn-explicit",
+    )
+    assert payload == {"access_token": "explicit", "ad_account_id": "99"}
+    assert fake.access_calls == [("tenant-a-meta-conn-explicit", "latest")]
 
 
 def test_get_connection_secret_reads_and_decodes_json(

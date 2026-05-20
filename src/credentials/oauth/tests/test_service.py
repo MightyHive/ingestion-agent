@@ -53,6 +53,67 @@ def test_handle_callback_meta_upserts_connection(monkeypatch: pytest.MonkeyPatch
     assert calls[0]["payload"]["access_token"] == "token-1"
 
 
+def test_handle_callback_google_ads_upserts_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MDS_OAUTH_STATE_SECRET", "secret-1")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "google-client-id")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "google-client-secret")
+    monkeypatch.setenv("MDS_GOOGLE_ADS_DEVELOPER_TOKEN", "dev-token-123")
+
+    from credentials.oauth.state import build_state_token
+
+    state_token = build_state_token(
+        secret="secret-1",
+        tenant_id="tenant-a",
+        connection_id="conn-ga",
+        provider="google_ads",
+        user_id="alice",
+        name="Google Ads Prod",
+    )
+
+    async def _exchange_code(code: str):
+        return {
+            "refresh_token": "refresh-1",
+            "access_token": "access-1",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+        }
+
+    monkeypatch.setattr(
+        oauth_service.google_ads, "exchange_code_for_tokens", _exchange_code
+    )
+    calls: list[dict] = []
+
+    class _Record:
+        connection_id = "conn-ga"
+
+    def _upsert(**kwargs):
+        calls.append(kwargs)
+        return _Record()
+
+    monkeypatch.setattr(oauth_service.credentials_service, "upsert_connection", _upsert)
+
+    record = asyncio.run(
+        oauth_service.handle_callback(
+            provider="google_ads",
+            code="code-ga",
+            state=state_token,
+        )
+    )
+    assert record.connection_id == "conn-ga"
+    assert calls[0]["tenant_id"] == "tenant-a"
+    assert calls[0]["provider"] == "google_ads"
+    assert calls[0]["connection_id"] == "conn-ga"
+    assert calls[0]["name"] == "Google Ads Prod"
+    payload = calls[0]["payload"]
+    assert payload["access_token"] == "access-1"
+    assert payload["refresh_token"] == "refresh-1"
+    assert payload["client_id"] == "google-client-id"
+    assert payload["client_secret"] == "google-client-secret"
+    assert payload["developer_token"] == "dev-token-123"
+
+
 def test_build_success_redirect_url(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MDS_OAUTH_FRONTEND_SUCCESS_URL", "http://localhost:3000/cb")
     url = oauth_service.build_success_redirect_url(
