@@ -7,6 +7,7 @@
 *.pem
 # Solo ignorar JSONs en la raíz por si descargas las Service Accounts de GCP 
 /*.json 
+src/credentials/keys/
 
 # ==========================================
 # 🐍 Python & Entorno Virtual
