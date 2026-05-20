@@ -61,3 +61,5 @@ frontend/*.egg-info/
 frontend/*.py[cod]
 frontend/$py.class
 frontend/env/   
+
+terraform.tfvars
