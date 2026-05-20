@@ -7,11 +7,20 @@ keeping HTTP concerns out of the credentials package internals.
 from __future__ import annotations
 
 from credentials.db import get_session
-from credentials.exceptions import ConnectionNotFoundError
+from credentials.exceptions import (
+    ConnectionInactiveError,
+    ConnectionNotFoundError,
+    InvalidStatusTransitionError,
+)
+from credentials.lifecycle import (
+    connection_allows_secret_write,
+    validate_status_transition,
+)
 from credentials.repository import ConnectionRepository
 from credentials.schemas import ConnectionCreate, ConnectionRecord, ConnectionStatus
 from credentials.secrets import (
     build_secret_id,
+    revoke_connection_secret,
     rotate_connection_secret,
     store_connection_secret,
 )
@@ -35,6 +44,11 @@ def upsert_connection(
             provider=provider,
             connection_id=connection_id,
         )
+
+        if existing is not None and not connection_allows_secret_write(existing.status):
+            raise ConnectionInactiveError(
+                f"connection '{connection_id}' is not active (status={existing.status.value})"
+            )
 
         if existing is None:
             store_connection_secret(
@@ -99,10 +113,25 @@ def update_connection_status(
     connection_id: str,
     status: ConnectionStatus,
 ) -> ConnectionRecord:
-    """Update lifecycle status for one tenant-scoped connection."""
+    """Update lifecycle status and apply Secret Manager policy on revoke."""
 
     with get_session() as session:
         repo = ConnectionRepository(session)
+        existing = repo.get(tenant_id=tenant_id, connection_id=connection_id)
+        if existing is None:
+            raise ConnectionNotFoundError(
+                f"connection '{connection_id}' not found for tenant '{tenant_id}'"
+            )
+
+        validate_status_transition(existing.status, status)
+
+        if status == ConnectionStatus.REVOKED:
+            revoke_connection_secret(
+                tenant_id=tenant_id,
+                provider=existing.provider,
+                connection_id=connection_id,
+            )
+
         return repo.update_status(
             tenant_id=tenant_id,
             connection_id=connection_id,

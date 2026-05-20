@@ -36,6 +36,8 @@ RUN_MODE=api uvicorn api:app --reload --host 0.0.0.0 --port 8000
 | GET    | `/api/credentials`                      | ✅ estable (v1.0)             | Lista conexiones del tenant (`X-Tenant-Id`). |
 | GET    | `/api/credentials/{connection_id}`      | ✅ estable (v1.0)             | Detalle de conexión del tenant. |
 | PATCH  | `/api/credentials/{connection_id}/status` | ✅ estable (v1.0)          | Actualiza status (`active|inactive|revoked`). |
+| GET    | `/api/oauth/{provider}/authorize`       | ✅ estable (v1.0)             | Inicia OAuth para `meta` o `google_ads`. |
+| GET    | `/api/oauth/{provider}/callback`        | ✅ estable (v1.0)             | Callback OAuth: exchange code, upsert credencial y redirect. |
 
 > ✅ = estable, parte del contrato a largo plazo.
 >
@@ -199,6 +201,7 @@ Ejecuta el pipeline determinístico de ingesta para un manifest dado, en una sol
 ```json
 {
   "manifest_id": "meta_facebook_ad_insights",
+  "connection_id": "conn-meta-prod",
   "params": {
     "fields": ["account_id", "campaign_name", "spend"],
     "days_back": 7
@@ -209,7 +212,13 @@ Ejecuta el pipeline determinístico de ingesta para un manifest dado, en una sol
 | Campo         | Tipo                  | Notas |
 |---------------|-----------------------|-------|
 | `manifest_id` | `string` (snake_case) | Id del manifest, tal como aparece en `GET /api/catalog`. |
+| `connection_id` | `string`            | Id estable de conexión registrado en `/api/credentials/{provider}/{connection_id}`. Obligatorio para resolver credenciales en Secret Manager. |
 | `params`      | `object`              | Parámetros del conector. Debe incluir `fields` (lista de nombres de `available_fields` seleccionables; lista vacía = "todos los selectables"). Las otras keys tienen que matchear el `params` del manifest (validado contra los grupos `required` + `optional` + `one_of`). |
+
+**Headers requeridos:**
+
+- `X-Tenant-Id`: tenant dueño de la conexión.
+- `X-User-Id` o `Authorization: Bearer <api_key>`: identidad para autorización tenant-scoped.
 
 **Response 200 (OK o WARN):**
 
@@ -235,7 +244,7 @@ Body con el shape de `formatted_response` que produce el nodo `format_response`:
 | Campo         | Tipo                       | Notas |
 |---------------|----------------------------|-------|
 | `manifest_id` | `string`                   | Eco del request. |
-| `tenant_id`   | `string`                   | Tenant resuelto. Hoy está hardcodeado a `"dev"` en el handler (`_DEFAULT_TENANT_ID` en `src/api.py`). En Fase 5 viene del header `X-Tenant-Id` + resolver con Secret Manager + SA impersonation. |
+| `tenant_id`   | `string`                   | Tenant tomado de `X-Tenant-Id`. |
 | `target_table`| `string`                   | Tabla destino en BigQuery, con tokens del `bronze_pattern` ya sustituidos. **MVP**: no se ejecuta el insert aún — eso queda para Fase 5. |
 | `ddl`         | `string`                   | DDL `CREATE TABLE` determinístico generado por `Manifest.to_ddl()`. Mismo contrato que ya usabas en `SchemaApproval.ddl`. |
 | `columns`     | `string[]`                 | Subset solicitado (o todos los selectables si pasaste `fields: []`). |
@@ -261,10 +270,17 @@ Body con el shape de `formatted_response` que produce el nodo `format_response`:
 
 | Code | Cuándo                                                                                              | `error`              |
 |------|-----------------------------------------------------------------------------------------------------|----------------------|
+| 400  | Falta `X-Tenant-Id`.                                                                                | `missing_tenant_header` |
+| 401  | Falta identidad (`X-User-Id`) o API key inválida.                                                   | `missing_user` / `invalid_api_key` |
+| 403  | Usuario desconocido o sin permisos sobre el tenant del header.                                      | `unknown_user` / `tenant_forbidden` |
 | 200  | Pipeline terminó OK o WARN.                                                                         | (no aplica — body es el shape de éxito) |
 | 400  | `request_validator` falló: faltan params, formato inválido, manifest_id desconocido, grupo `one_of` no satisfecho. | `validation_failed`  |
+| 400  | La conexión existe pero no corresponde al `platform` del manifest.                                  | `provider_mismatch` |
 | 422  | El JSON del body no parsea contra el shape mínimo de `RunRequest` (FastAPI/Pydantic lo intercepta antes del handler). Body: `{detail: <pydantic errors>, request_id}`. **También trae `X-Request-Id`**, vía un exception handler dedicado. | (formato Pydantic estándar + `request_id`) |
+| 404  | `connection_id` no existe para ese tenant.                                                          | `connection_not_found` |
+| 409  | La conexión no está activa (`inactive` o `revoked`).                                                | `connection_inactive` |
 | 502  | El conector falló (api unreachable, upstream 5xx, `status=error` reportado por el conector).        | `connector_failed`   |
+| 502  | Error al leer payload de Secret Manager durante la resolución de credenciales.                      | `secret_manager_failed` |
 | 500  | Error inesperado del pipeline (DDL falló, excepción no manejada, no se produjo `formatted_response`). | `internal` / `pipeline_failed` / `no_formatted_response` |
 
 **Headers de toda response:**
@@ -310,7 +326,7 @@ Si te encontrás con un caso que dependía del comportamiento SSE / `ui_trigger`
 
 ### 3.4 Endpoints de credenciales (`/api/credentials/*`)
 
-Todos los endpoints de credenciales requieren header `X-Tenant-Id` y devuelven
+Todos los endpoints de credenciales requieren header `X-Tenant-Id` y además `X-User-Id` (o `Authorization: Bearer <api_key>`), y devuelven
 metadata solamente (nunca el payload secreto).
 
 #### `PUT /api/credentials/{provider}/{connection_id}`
@@ -332,6 +348,8 @@ Body:
 Status:
 - `200` upsert OK.
 - `400` payload inválido o falta `X-Tenant-Id`.
+- `401` falta `X-User-Id` (o API key inválida).
+- `403` user no habilitado para el tenant.
 - `502` error de Secret Manager.
 - `500` error inesperado.
 
@@ -373,6 +391,90 @@ Body:
 
 Actualiza el estado de la conexión (tenant-scoped).
 
+**Estados y transiciones:**
+
+| Desde | Hacia permitido |
+|-------|-----------------|
+| `active` | `inactive`, `revoked` |
+| `inactive` | `active`, `revoked` |
+| `revoked` | *(ninguno — terminal)* |
+
+**Efecto por estado:**
+
+| Status | `POST /api/run` | `PUT` upsert |
+|--------|-----------------|--------------|
+| `active` | OK (si provider coincide) | OK |
+| `inactive` | `409 connection_inactive` | `409 connection_inactive` |
+| `revoked` | `409 connection_inactive` | `409 connection_inactive` |
+
+**Política Secret Manager** (proyecto `monks-mds-dev`):
+
+- **`inactive`:** el secreto y sus versiones **permanecen** en SM; solo la metadata en DB bloquea run/upsert. Reactivar: `PATCH` → `active`.
+- **`revoked`:** al hacer PATCH, el backend **deshabilita todas las versiones enabled** (`disable_secret_version`). El recurso secreto **no se borra** automáticamente; borrado físico (`delete_secret`) es manual tras ventana de retención (ops).
+- Detalle completo: [`src/credentials/README.md`](../src/credentials/README.md#connection-lifecycle-revocation--deactivation).
+
+Status codes adicionales:
+
+- `409` transición inválida (ej. `revoked` → `active`) → `invalid_status_transition`
+- `409` upsert sobre conexión no activa → `connection_inactive`
+- `502` fallo al deshabilitar versiones en SM durante revoke → `secret_manager_failed`
+
+---
+
+### 3.5 OAuth de credenciales (`/api/oauth/*`)
+
+Providers soportados:
+
+- `meta`
+- `google_ads`
+
+#### `GET /api/oauth/{provider}/authorize`
+
+Inicia flujo OAuth Authorization Code.
+
+Headers:
+
+- `X-Tenant-Id`
+- `X-User-Id` (o `Authorization: Bearer <api_key>`)
+
+Query params:
+
+- `connection_id` (required)
+- `name` (optional)
+
+Response:
+
+- `302` redirect al authorize URL del provider.
+
+#### `GET /api/oauth/{provider}/callback`
+
+Recibe callback del provider y completa onboarding:
+
+1. valida `state` firmado (`MDS_OAUTH_STATE_SECRET`)
+2. intercambia `code` por tokens
+3. hace upsert de conexión en `/api/credentials` internamente
+4. redirect al frontend (`MDS_OAUTH_FRONTEND_SUCCESS_URL`)
+
+Query params:
+
+- `code` (required)
+- `state` (required)
+
+Response:
+
+- `302` success redirect
+- `400 invalid_oauth_state` para state inválido/expirado
+- `400 oauth_provider_failed` para fallos de provider/config
+
+Variables de entorno relevantes:
+
+- `MDS_USER_TENANTS_FILE`
+- `MDS_OAUTH_STATE_SECRET`
+- `MDS_OAUTH_FRONTEND_SUCCESS_URL`
+- `META_APP_ID`, `META_APP_SECRET`, `META_OAUTH_REDIRECT_URI`
+- `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI`
+- `MDS_GOOGLE_ADS_DEVELOPER_TOKEN`
+
 ---
 
 ## 5. Roadmap por fase
@@ -382,7 +484,7 @@ Actualiza el estado de la conexión (tenant-scoped).
 | **0** ✅ | Submodule + scaffolding | Sin cambios en la API. |
 | **1** ✅ | Manifest loader + catálogo | **Nuevos:** `GET /api/catalog`, `GET /api/catalog/{id}`. |
 | **2** ✅ | Nodos determinísticos + grafo nuevo en paralelo | Sin cambios públicos en la API todavía. El nuevo grafo se prueba con `LocalBackend` adentro. |
-| **3** ✅ | Entrypoint determinístico | **Nuevo:** `POST /api/run` (sync JSON). **Deprecated** (con headers RFC 8594): `/api/chat`, `/api/submit_input`, `/api/templates`, `/api/sessions/{id}/history`. Los deprecated seguían funcionando hasta Fase 4. tenant_id hardcodeado a `"dev"`; se reemplaza por header `X-Tenant-Id` en Fase 5. |
+| **3** ✅ | Entrypoint determinístico | **Nuevo:** `POST /api/run` (sync JSON). **Deprecated** (con headers RFC 8594): `/api/chat`, `/api/submit_input`, `/api/templates`, `/api/sessions/{id}/history`. Los deprecated seguían funcionando hasta Fase 4. |
 | **4** ✅ | Borrado del legacy | Se borraron `/api/chat`, `/api/submit_input`, `/api/templates`, `/api/sessions/{id}/history` del backend + el código de los agentes LLM (`src/agents/`, `src/main.py`, `src/services/`, etc.), el checkpointer `AsyncSqliteSaver`, y todas las dependencias del stack LLM en `requirements.txt`. **Único endpoint POST de ingesta a partir de acá: `/api/run`.** |
 | **5** | HTTPBackend + Cloud Functions en producción | Sin cambios en la API frontend-facing. Cambios internos: el dispatcher empieza a invocar Cloud Functions del cliente con SA impersonation. Para el frontend es transparente. |
 | **6** | Resto de conectores (IG, Google Ads, DV360) | El catálogo crece automáticamente — vas a ver más entries en `/api/catalog`. Sin cambios estructurales. |

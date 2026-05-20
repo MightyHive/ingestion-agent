@@ -24,6 +24,14 @@ class SecretsBackend(ABC):
     def add_secret_version(self, secret_id: str, payload: bytes) -> str:
         """Persist a new payload version and return a version identifier."""
 
+    @abstractmethod
+    def access_secret_version(self, secret_id: str, version: str = "latest") -> bytes:
+        """Read one payload version and return raw bytes."""
+
+    @abstractmethod
+    def disable_all_secret_versions(self, secret_id: str) -> int:
+        """Disable all enabled versions for a secret; return count disabled."""
+
 
 class GcpSecretsBackend(SecretsBackend):
     """Google Secret Manager backend for real credential storage."""
@@ -69,3 +77,34 @@ class GcpSecretsBackend(SecretsBackend):
                 f"failed to add version for secret '{secret_id}'"
             ) from exc
         return response.name
+
+    def access_secret_version(self, secret_id: str, version: str = "latest") -> bytes:
+        """Read a Secret Manager payload version and return raw bytes."""
+
+        name = (
+            f"projects/{self._project_id}/secrets/{secret_id}/versions/{version}"
+        )
+        try:
+            response = self._client.access_secret_version(request={"name": name})
+        except GoogleAPICallError as exc:
+            raise SecretManagerError(
+                f"failed to access version '{version}' for secret '{secret_id}'"
+            ) from exc
+        return bytes(response.payload.data)
+
+    def disable_all_secret_versions(self, secret_id: str) -> int:
+        """Disable every enabled version so payloads can no longer be accessed."""
+
+        parent = f"projects/{self._project_id}/secrets/{secret_id}"
+        disabled = 0
+        try:
+            for version in self._client.list_secret_versions(request={"parent": parent}):
+                if version.state != secretmanager.SecretVersion.State.ENABLED:
+                    continue
+                self._client.disable_secret_version(request={"name": version.name})
+                disabled += 1
+        except GoogleAPICallError as exc:
+            raise SecretManagerError(
+                f"failed to disable versions for secret '{secret_id}'"
+            ) from exc
+        return disabled
