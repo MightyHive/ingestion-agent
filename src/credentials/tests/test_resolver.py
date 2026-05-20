@@ -47,6 +47,11 @@ def test_resolve_for_run_happy_path(
         lambda tenant_id, provider, connection_id: {"access_token": "tok-1"},
     )
     monkeypatch.setattr(
+        resolver_module,
+        "default_secret_project_id",
+        lambda: "monks-mds-dev",
+    )
+    monkeypatch.setattr(
         resolver_module.TenantContext,
         "resolve",
         classmethod(
@@ -67,6 +72,10 @@ def test_resolve_for_run_happy_path(
     assert resolved.tenant_id == "tenant-a"
     assert resolved.gcp_project == "monks-mds-dev"
     assert resolved.context == {"access_token": "tok-1"}
+    assert resolved.connection_id == "conn-1"
+    assert resolved.provider == "meta"
+    assert resolved.secret_project_id == "monks-mds-dev"
+    assert resolved.secret_id == "tenant-a-meta-conn-1"
 
 
 def test_resolve_for_run_not_found(

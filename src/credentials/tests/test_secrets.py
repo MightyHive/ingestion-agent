@@ -52,7 +52,7 @@ class _FakeBackend:
 
 def _patch_both_backends(monkeypatch: pytest.MonkeyPatch, fake: _FakeBackend) -> None:
     monkeypatch.setattr("credentials.secrets.get_writer_secrets_backend", lambda: fake)
-    monkeypatch.setattr("credentials.secrets.get_reader_secrets_backend", lambda: fake)
+    monkeypatch.setattr("credentials.secrets._reader_backend_for_project", lambda _project: fake)
 
 
 def test_build_secret_id_sanitizes_segments() -> None:
@@ -199,7 +199,10 @@ def test_store_uses_writer_and_get_uses_reader_backend(
     writer = _FakeBackend()
     reader = _FakeBackend()
     monkeypatch.setattr("credentials.secrets.get_writer_secrets_backend", lambda: writer)
-    monkeypatch.setattr("credentials.secrets.get_reader_secrets_backend", lambda: reader)
+    monkeypatch.setattr(
+        "credentials.secrets._reader_backend_for_project",
+        lambda _project: reader,
+    )
 
     store_connection_secret(
         tenant_id="dev",

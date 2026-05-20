@@ -24,7 +24,7 @@ src/credentials/
   README.md              ← this file
   __init__.py            ← public exports for library and tests
   lifecycle.py           ← status transition rules and write guards
-  resolver.py            ← resolve connection_id into TenantContext for /api/run
+  resolver.py            ← resolve connection_id into TenantContext for /api/run (API path)
   db.py                  ← SQLAlchemy engine, sessions, init_db()
   tables.py              ← ORM model for table `connections`
   schemas.py             ← Pydantic models (ConnectionCreate, ConnectionRecord, ConnectionStatus)
@@ -38,6 +38,10 @@ src/credentials/
     test_repository.py      ← repository unit tests
     test_secrets.py          ← secrets API unit tests (mocked GCP)
     test_secrets_gcp.py        ← optional live GCP smoke test (@pytest.mark.gcp)
+
+src/ingestion/auth/
+  context_resolver.py    ← worker: context → SM by refs → tenants.json fallback
+  tenant_context.py      ← TenantContext + serialization for graph state
 
 src/ingestion/tests/
   test_api_credentials.py  ← FastAPI integration tests for /api/credentials/*
@@ -79,7 +83,32 @@ GcpSecretsBackend                 SQLite / PostgreSQL
 2. API resolves the manifest, then calls `resolve_for_run(...)`.
 3. Resolver validates the connection row (`active`, provider matches manifest).
 4. Secret payload is read from Secret Manager (`access_secret_version`) and decoded as JSON object.
-5. Graph receives `resolved_tenant` and `connector_runner` invokes dispatcher with that context.
+5. API serializes `resolved_tenant` with infra + connection refs:
+   `gcp_project`, `service_account`, `connection_id`, `provider`,
+   `secret_project_id`, `secret_id`, and `context`.
+6. Worker path (`resolve_connector_context` in ``ingestion/auth/``) may read SM
+   again only if required keys are still missing (see **Hybrid vs refs-only** below).
+
+### Hybrid vs refs-only (how tokens reach `fetch`)
+
+Both modes use the same ``resolved_tenant`` shape (infra + ``secret_id`` + optional ``context``).
+The difference is **who reads Secret Manager** and **whether tokens sit in graph state**.
+
+| | **Hybrid (today)** | **Refs-only (future option)** |
+|---|-------------------|------------------------------|
+| API ``resolve_for_run`` | Reads SM → fills ``context`` with tokens | Only DB validation + refs; ``context`` empty |
+| ``resolved_tenant`` in state | Includes ``access_token``, etc. | Only ``secret_id``, ``secret_project_id``, … |
+| Worker ``resolve_connector_context`` | Skips SM if ``context`` already complete | Always reads SM once (needs refs) |
+| SM reads per run | Typically **one** (API); worker skips if keys present | **One** (worker only) |
+| Tokens in LangGraph state | Yes (inside ``resolved_tenant``) | No (only pointers) |
+
+Hybrid is intentional: errors surface at the API (502 ``secret_manager_failed``) before
+the graph runs, and local tests can pass a full ``context`` without GCP.
+
+Refs-only would mean changing ``resolve_for_run`` to stop calling
+``get_connection_secret`` / ``access_secret_payload`` and letting the dispatcher
+always load the payload from ``secret_id``. Behavior for connectors is the same;
+only orchestration and where secrets appear in memory change.
 
 ---
 
@@ -87,7 +116,7 @@ GcpSecretsBackend                 SQLite / PostgreSQL
 
 ### `db.py`
 
-- Resolves database URL from environment (see [Configuration](#configuration)).
+- Resolves database URL from environment (see [Configuration](##configuration)).
 - Exposes `engine`, `SessionLocal`, `init_db()`, and context manager `get_session()`.
 - Default dev database file: `<repo_root>/mds_credentials.db` (gitignored).
 
@@ -145,7 +174,7 @@ All reads/writes include `tenant_id` in the `WHERE` clause.
 
 ### `secrets.py`
 
-Public API for Secret Manager writes:
+Secret Manager helpers (central project ``MDS_GCP_PROJECT``, writer/reader service accounts):
 
 | Function | Role |
 |----------|------|
@@ -153,6 +182,8 @@ Public API for Secret Manager writes:
 | `secret_resource_name(project_id, secret_id)` | Full resource path helper |
 | `get_writer_secrets_backend()` | SM client with **writer** SA (`MDS_SA_CONNECTION_KEY`) |
 | `get_reader_secrets_backend()` | SM client with **reader** SA (`MDS_SA_INGESTION_KEY`) |
+| `default_secret_project_id()` | Read `MDS_GCP_PROJECT` for central SM payloads |
+| `access_secret_payload(secret_project_id, secret_id)` | Reader: fetch payload using explicit SM refs |
 | `store_connection_secret(...)` | Writer: `ensure_secret` + `add_secret_version` (create path) |
 | `rotate_connection_secret(...)` | Writer: `add_secret_version` only (update path) |
 | `get_connection_secret(...)` | Reader: `access_secret_version` + decode JSON (run path) |
@@ -183,7 +214,9 @@ Runtime resolver used by `POST /api/run`:
 - `resolve_for_run(tenant_id, connection_id, expected_platform)`
 - Reads tenant-scoped metadata from DB.
 - Enforces `status=active` and provider/platform match.
-- Reads Secret Manager payload and returns a `TenantContext`.
+- Returns `TenantContext` with both pre-resolved context and connector refs
+  (`connection_id`, `provider`, `secret_project_id`, `secret_id`) so worker
+  can re-resolve missing keys without another DB lookup.
 
 ### `__init__.py`
 
@@ -233,7 +266,36 @@ Auth-specific error mapping includes:
 
 ## Configuration
 
-Copy [`.env.example`](../../.env.example) to `.env` and adjust values.
+Create a **`.env`** file at the repository root (gitignored). `api.py` loads it on startup via `mds_env.load_mds_env()`.
+
+Example skeleton:
+
+```bash
+# GCP / Secret Manager
+MDS_GCP_PROJECT=monks-mds-dev
+MDS_SA_CONNECTION_KEY=/path/to/sm-credentials-writer.json
+MDS_SA_INGESTION_KEY=/path/to/sm-credentials-reader.json
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/sm-credentials-writer.json
+
+# DB metadata (use DATABASE_URL in prod or MDS_DB_PATH locally)
+MDS_DB_PATH=/path/to/mds_credentials.db
+
+# Ingestion + auth
+MDS_RUNTIME=local
+MDS_TENANTS_FILE=/path/to/tenants.json
+MDS_USER_TENANTS_FILE=/path/to/user_tenants.json
+
+# OAuth (Meta + Google Ads)
+MDS_OAUTH_STATE_SECRET=change-me-long-random-secret
+MDS_OAUTH_FRONTEND_SUCCESS_URL=http://localhost:3000/credentials-library
+META_APP_ID=
+META_APP_SECRET=
+META_OAUTH_REDIRECT_URI=http://localhost:8000/api/oauth/meta/callback
+GOOGLE_OAUTH_CLIENT_ID=
+GOOGLE_OAUTH_CLIENT_SECRET=
+GOOGLE_OAUTH_REDIRECT_URI=http://localhost:8000/api/oauth/google_ads/callback
+MDS_GOOGLE_ADS_DEVELOPER_TOKEN=
+```
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
@@ -252,8 +314,7 @@ Copy [`.env.example`](../../.env.example) to `.env` and adjust values.
 | `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` / `GOOGLE_OAUTH_REDIRECT_URI` | unset | Google Ads OAuth code flow |
 | `MDS_GOOGLE_ADS_DEVELOPER_TOKEN` | unset | Required by Google Ads connector payload |
 | `MDS_OAUTH_FRONTEND_SUCCESS_URL` | `http://localhost:3000/credentials-library` | Callback success redirect target |
-
-`api.py` loads `.env` automatically (`python-dotenv`) and calls `init_db()` on app startup.
+| `NEXT_PUBLIC_API_URL` | — | Frontend → API base URL (local dev) |
 
 ---
 
@@ -419,7 +480,7 @@ pytest src/credentials/tests -m gcp -q
 | `test_secrets.py` | `build_secret_id`, store/rotate/revoke with fake backend, payload validation |
 | `test_lifecycle.py` | Status transition matrix |
 | `test_service.py` | Upsert guards, revoke orchestration |
-| `test_secrets_gcp.py` | Live GCP smoke (skipped without `GOOGLE_APPLICATION_CREDENTIALS`) |
+| `test_secrets_gcp.py` | Live GCP smoke (skipped without `MDS_SA_CONNECTION_KEY` + `MDS_SA_INGESTION_KEY`) |
 | `test_api_credentials.py` | Upsert create/update, list/get, status patch, missing header, error mapping |
 
 Repository tests use a **temporary SQLite file** per run (`tests/conftest.py`), not the global `mds_credentials.db`.
@@ -429,6 +490,5 @@ Repository tests use a **temporary SQLite file** per run (`tests/conftest.py`), 
 ## Related documentation
 
 - HTTP contract details: [`docs/api.md`](../../docs/api.md)
-- Environment template: [`.env.example`](../../.env.example)
 
-When extending this module, update this README and `docs/api.md` together.
+When extending this module, update this README, the `.env` variable table above, and `docs/api.md` together.

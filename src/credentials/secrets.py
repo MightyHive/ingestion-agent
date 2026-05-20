@@ -98,10 +98,29 @@ def get_writer_secrets_backend() -> SecretsBackend:
     return get_secrets_backend(role=SecretManagerRole.WRITER)
 
 
+def _reader_backend_for_project(secret_project_id: str) -> SecretsBackend:
+    """Reader backend for one explicit Secret Manager project."""
+
+    project = secret_project_id.strip()
+    if not project:
+        raise SecretManagerError("secret_project_id cannot be empty")
+    client = _secret_manager_client_for_role(SecretManagerRole.READER)
+    return GcpSecretsBackend(project_id=project, client=client)
+
+
 def get_reader_secrets_backend() -> SecretsBackend:
     """Backend for read at ingestion time (MDS_SA_INGESTION_KEY or ADC fallback)."""
 
-    return get_secrets_backend(role=SecretManagerRole.READER)
+    return _reader_backend_for_project(default_secret_project_id())
+
+
+def default_secret_project_id() -> str:
+    """Return the configured Secret Manager project for connection payloads."""
+
+    project = os.getenv("MDS_GCP_PROJECT", _DEFAULT_PROJECT).strip()
+    if not project:
+        raise SecretManagerError("MDS_GCP_PROJECT cannot be empty")
+    return project
 
 
 def store_connection_secret(
@@ -159,13 +178,34 @@ def get_connection_secret(
 ) -> dict[str, Any]:
     """Read one connection payload from Secret Manager and decode JSON object."""
 
-    backend = get_reader_secrets_backend()
     secret_id = build_secret_id(
         tenant_id=tenant_id,
         provider=provider,
         connection_id=connection_id,
     )
-    payload_bytes = backend.access_secret_version(secret_id, version=version)
+    return access_secret_payload(
+        secret_project_id=default_secret_project_id(),
+        secret_id=secret_id,
+        version=version,
+    )
+
+
+def access_secret_payload(
+    *,
+    secret_project_id: str,
+    secret_id: str,
+    version: str = "latest",
+) -> dict[str, Any]:
+    """Read one payload by explicit Secret Manager project + secret id."""
+
+    project = secret_project_id.strip()
+    if not project:
+        raise SecretManagerError("secret_project_id cannot be empty")
+    sid = secret_id.strip()
+    if not sid:
+        raise SecretManagerError("secret_id cannot be empty")
+    backend = _reader_backend_for_project(project)
+    payload_bytes = backend.access_secret_version(sid, version=version)
     return _decode_payload_to_dict(payload_bytes)
 
 
