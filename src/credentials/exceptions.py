@@ -21,3 +21,15 @@ class SecretManagerError(CredentialsRepositoryError):
 
 class SecretPayloadError(CredentialsRepositoryError):
     """Raised when a secret payload cannot be normalized to bytes."""
+
+
+class ConnectionInactiveError(CredentialsRepositoryError):
+    """Raised when trying to run ingestion with non-active connection."""
+
+
+class ConnectionProviderMismatchError(CredentialsRepositoryError):
+    """Raised when connection provider does not match manifest platform."""
+
+
+class InvalidStatusTransitionError(CredentialsRepositoryError):
+    """Raised when a lifecycle status change is not allowed."""

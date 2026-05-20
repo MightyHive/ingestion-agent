@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import json
 from pathlib import Path
 import uuid
 
@@ -52,9 +53,30 @@ def api_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         "rotate_connection_secret",
         lambda tenant_id, provider, connection_id, payload: f"version-{connection_id}",
     )
+    monkeypatch.setattr(
+        credentials_service,
+        "revoke_connection_secret",
+        lambda **kwargs: 1,
+    )
 
     from fastapi.testclient import TestClient
 
+    registry_path = tmp_path / "user_tenants.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "users": {
+                    "alice": ["tenant-a"],
+                    "bob": ["tenant-b"],
+                },
+                "api_keys": {"key-alice": "alice"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MDS_USER_TENANTS_FILE", str(registry_path))
+    monkeypatch.delenv("MDS_AUTH_DISABLED", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     import api as api_module
 
     with TestClient(api_module.app) as client:
@@ -64,8 +86,8 @@ def api_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     engine.dispose()
 
 
-def _headers(tenant_id: str) -> dict[str, str]:
-    return {"X-Tenant-Id": tenant_id}
+def _headers(tenant_id: str, user_id: str = "alice") -> dict[str, str]:
+    return {"X-Tenant-Id": tenant_id, "X-User-Id": user_id}
 
 
 def _assert_request_id(response) -> None:
@@ -112,12 +134,12 @@ def test_credentials_tenant_isolation(api_client) -> None:
     )
     api_client.put(
         "/api/credentials/meta/conn-b",
-        headers=_headers("tenant-b"),
+        headers=_headers("tenant-b", "bob"),
         json={"payload": {"access_token": "b"}},
     )
 
     list_a = api_client.get("/api/credentials", headers=_headers("tenant-a"))
-    list_b = api_client.get("/api/credentials", headers=_headers("tenant-b"))
+    list_b = api_client.get("/api/credentials", headers=_headers("tenant-b", "bob"))
     assert list_a.status_code == 200
     assert list_b.status_code == 200
     assert list_a.json()["count"] == 1
@@ -126,10 +148,80 @@ def test_credentials_tenant_isolation(api_client) -> None:
     assert list_b.json()["connections"][0]["connection_id"] == "conn-b"
 
     wrong_tenant = api_client.get(
-        "/api/credentials/conn-a", headers=_headers("tenant-b")
+        "/api/credentials/conn-a", headers=_headers("tenant-b", "bob")
     )
     assert wrong_tenant.status_code == 404
     assert wrong_tenant.json()["error"] == "connection_not_found"
+
+
+def test_credentials_upsert_blocked_when_inactive(api_client) -> None:
+    api_client.put(
+        "/api/credentials/meta/conn-blocked",
+        headers=_headers("tenant-a"),
+        json={"payload": {"access_token": "a"}},
+    )
+    api_client.patch(
+        "/api/credentials/conn-blocked/status",
+        headers=_headers("tenant-a"),
+        json={"status": "inactive"},
+    )
+
+    blocked = api_client.put(
+        "/api/credentials/meta/conn-blocked",
+        headers=_headers("tenant-a"),
+        json={"payload": {"access_token": "b"}},
+    )
+    assert blocked.status_code == 409
+    assert blocked.json()["error"] == "connection_inactive"
+
+
+def test_credentials_reactivate_allows_upsert(api_client) -> None:
+    api_client.put(
+        "/api/credentials/meta/conn-reactivate",
+        headers=_headers("tenant-a"),
+        json={"payload": {"access_token": "a"}, "name": "Before"},
+    )
+    api_client.patch(
+        "/api/credentials/conn-reactivate/status",
+        headers=_headers("tenant-a"),
+        json={"status": "inactive"},
+    )
+    api_client.patch(
+        "/api/credentials/conn-reactivate/status",
+        headers=_headers("tenant-a"),
+        json={"status": "active"},
+    )
+
+    updated = api_client.put(
+        "/api/credentials/meta/conn-reactivate",
+        headers=_headers("tenant-a"),
+        json={"payload": {"access_token": "b"}, "name": "After"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["connection"]["name"] == "After"
+
+
+def test_credentials_revoke_and_block_reactivation(api_client) -> None:
+    api_client.put(
+        "/api/credentials/meta/conn-revoked",
+        headers=_headers("tenant-a"),
+        json={"payload": {"access_token": "a"}},
+    )
+    revoked = api_client.patch(
+        "/api/credentials/conn-revoked/status",
+        headers=_headers("tenant-a"),
+        json={"status": "revoked"},
+    )
+    assert revoked.status_code == 200
+    assert revoked.json()["connection"]["status"] == "revoked"
+
+    reactivate = api_client.patch(
+        "/api/credentials/conn-revoked/status",
+        headers=_headers("tenant-a"),
+        json={"status": "active"},
+    )
+    assert reactivate.status_code == 409
+    assert reactivate.json()["error"] == "invalid_status_transition"
 
 
 def test_credentials_patch_status(api_client) -> None:
@@ -155,6 +247,25 @@ def test_credentials_missing_tenant_header_returns_400(api_client) -> None:
     assert resp.status_code == 400
     assert resp.json()["error"] == "missing_tenant_header"
     _assert_request_id(resp)
+
+
+def test_credentials_missing_user_returns_401(api_client) -> None:
+    resp = api_client.put(
+        "/api/credentials/meta/conn-1",
+        headers={"X-Tenant-Id": "tenant-a"},
+        json={"payload": {"access_token": "a"}},
+    )
+    assert resp.status_code == 401
+    assert resp.json()["error"] == "missing_user"
+
+
+def test_credentials_tenant_forbidden_returns_403(api_client) -> None:
+    resp = api_client.get(
+        "/api/credentials",
+        headers=_headers("tenant-b", "alice"),
+    )
+    assert resp.status_code == 403
+    assert resp.json()["error"] == "tenant_forbidden"
 
 
 def test_credentials_error_mapping_secret_payload(api_client, monkeypatch) -> None:

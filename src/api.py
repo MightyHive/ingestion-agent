@@ -29,21 +29,43 @@ if you need the historical implementation.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import uuid
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
+from auth import (
+    InvalidApiKeyError,
+    MissingUserError,
+    TenantAccessDeniedError,
+    UnknownUserError,
+    assert_tenant_allowed,
+    auth_is_disabled,
+    load_user_tenant_registry,
+    resolve_user_id,
+)
+from mds_env import load_mds_env
+
+load_mds_env()
+
+from credentials import init_db
+from credentials import oauth as oauth_service
+from credentials import resolve_for_run
 from credentials import service as credentials_service
 from credentials.exceptions import (
+    ConnectionInactiveError,
     ConnectionNotFoundError,
+    ConnectionProviderMismatchError,
+    InvalidStatusTransitionError,
     SecretManagerError,
     SecretPayloadError,
 )
+from credentials.oauth.exceptions import InvalidOAuthStateError, OAuthProviderError
 from credentials.schemas import ConnectionRecord, ConnectionStatus
 from ingestion import build_graph
 from ingestion.manifest import (
@@ -53,7 +75,15 @@ from ingestion.manifest import (
 )
 
 
-app = FastAPI(title="MDS API", version="2.0.0")
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Initialize process-level resources once per app startup."""
+
+    init_db()
+    yield
+
+
+app = FastAPI(title="MDS API", version="2.0.0", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -92,6 +122,11 @@ class RunRequest(BaseModel):
             "Other keys must match the manifest's params schema."
         ),
     )
+    connection_id: str = Field(
+        ...,
+        min_length=1,
+        description="Stable connection id to resolve tenant credentials.",
+    )
 
 
 class CredentialUpsertRequest(BaseModel):
@@ -129,10 +164,6 @@ class CredentialResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Error helpers
 # ---------------------------------------------------------------------------
-
-# Hardcoded tenant for Phase 3/4. Phase 5 replaces this with a real resolver
-# (header ``X-Tenant-Id`` + Secret Manager + SA impersonation).
-_DEFAULT_TENANT_ID = "dev"
 
 # Mapping from failing-node id → (HTTP status, error key). Keeps the handler
 # branchless and makes it trivial to add new failure modes (e.g. for the
@@ -186,6 +217,99 @@ def _tenant_or_error(
     )
 
 
+def _auth_error_response(request_id: str, exc: Exception) -> JSONResponse:
+    """Map auth-layer errors to API responses."""
+
+    if isinstance(exc, MissingUserError):
+        return _error_response(
+            request_id=request_id,
+            status_code=401,
+            error_key="missing_user",
+            reason=str(exc),
+        )
+    if isinstance(exc, InvalidApiKeyError):
+        return _error_response(
+            request_id=request_id,
+            status_code=401,
+            error_key="invalid_api_key",
+            reason=str(exc),
+        )
+    if isinstance(exc, UnknownUserError):
+        return _error_response(
+            request_id=request_id,
+            status_code=403,
+            error_key="unknown_user",
+            reason=str(exc),
+        )
+    if isinstance(exc, TenantAccessDeniedError):
+        return _error_response(
+            request_id=request_id,
+            status_code=403,
+            error_key="tenant_forbidden",
+            reason=str(exc),
+        )
+    return _error_response(
+        request_id=request_id,
+        status_code=500,
+        error_key="internal",
+        reason=str(exc) or exc.__class__.__name__,
+    )
+
+
+def _oauth_error_response(request_id: str, exc: Exception) -> JSONResponse:
+    """Map OAuth errors to API responses."""
+
+    if isinstance(exc, InvalidOAuthStateError):
+        return _error_response(
+            request_id=request_id,
+            status_code=400,
+            error_key="invalid_oauth_state",
+            reason=str(exc),
+        )
+    if isinstance(exc, OAuthProviderError):
+        return _error_response(
+            request_id=request_id,
+            status_code=400,
+            error_key="oauth_provider_failed",
+            reason=str(exc),
+        )
+    return _error_response(
+        request_id=request_id,
+        status_code=500,
+        error_key="internal",
+        reason=str(exc) or exc.__class__.__name__,
+    )
+
+
+def _resolve_tenant_access(
+    *,
+    request_id: str,
+    tenant_id: str | None,
+    x_user_id: str | None,
+    authorization: str | None,
+) -> tuple[str | None, str | None, JSONResponse | None]:
+    """Resolve tenant + user access for tenant-scoped endpoints."""
+
+    tenant, tenant_err = _tenant_or_error(request_id=request_id, tenant_id=tenant_id)
+    if tenant_err is not None:
+        return None, None, tenant_err
+
+    if auth_is_disabled():
+        return tenant, "auth_disabled", None
+
+    try:
+        registry = load_user_tenant_registry()
+        user_id = resolve_user_id(
+            x_user_id=x_user_id,
+            authorization=authorization,
+            registry=registry,
+        )
+        assert_tenant_allowed(user_id=user_id, tenant_id=tenant, registry=registry)
+    except Exception as exc:
+        return None, None, _auth_error_response(request_id, exc)
+    return tenant, user_id, None
+
+
 def _connection_payload(record: ConnectionRecord) -> dict[str, Any]:
     """Serialize connection record for API JSON responses."""
 
@@ -216,6 +340,27 @@ def _credentials_error_response(request_id: str, exc: Exception) -> JSONResponse
             request_id=request_id,
             status_code=404,
             error_key="connection_not_found",
+            reason=str(exc),
+        )
+    if isinstance(exc, ConnectionInactiveError):
+        return _error_response(
+            request_id=request_id,
+            status_code=409,
+            error_key="connection_inactive",
+            reason=str(exc),
+        )
+    if isinstance(exc, InvalidStatusTransitionError):
+        return _error_response(
+            request_id=request_id,
+            status_code=409,
+            error_key="invalid_status_transition",
+            reason=str(exc),
+        )
+    if isinstance(exc, ConnectionProviderMismatchError):
+        return _error_response(
+            request_id=request_id,
+            status_code=400,
+            error_key="provider_mismatch",
             reason=str(exc),
         )
     if isinstance(exc, SecretManagerError):
@@ -267,11 +412,18 @@ async def upsert_credential(
     connection_id: str,
     request: CredentialUpsertRequest,
     x_tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
+    x_user_id: str | None = Header(default=None, alias="X-User-Id"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> JSONResponse:
     """Create or update one tenant-scoped credential connection."""
 
     request_id = str(uuid.uuid4())
-    tenant_id, err = _tenant_or_error(request_id=request_id, tenant_id=x_tenant_id)
+    tenant_id, _, err = _resolve_tenant_access(
+        request_id=request_id,
+        tenant_id=x_tenant_id,
+        x_user_id=x_user_id,
+        authorization=authorization,
+    )
     if err is not None:
         return err
 
@@ -297,11 +449,18 @@ async def upsert_credential(
 async def list_credentials(
     status: ConnectionStatus | None = None,
     x_tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
+    x_user_id: str | None = Header(default=None, alias="X-User-Id"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> JSONResponse:
     """List connections for one tenant."""
 
     request_id = str(uuid.uuid4())
-    tenant_id, err = _tenant_or_error(request_id=request_id, tenant_id=x_tenant_id)
+    tenant_id, _, err = _resolve_tenant_access(
+        request_id=request_id,
+        tenant_id=x_tenant_id,
+        x_user_id=x_user_id,
+        authorization=authorization,
+    )
     if err is not None:
         return err
 
@@ -324,11 +483,18 @@ async def list_credentials(
 async def get_credential(
     connection_id: str,
     x_tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
+    x_user_id: str | None = Header(default=None, alias="X-User-Id"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> JSONResponse:
     """Get one tenant-scoped connection by id."""
 
     request_id = str(uuid.uuid4())
-    tenant_id, err = _tenant_or_error(request_id=request_id, tenant_id=x_tenant_id)
+    tenant_id, _, err = _resolve_tenant_access(
+        request_id=request_id,
+        tenant_id=x_tenant_id,
+        x_user_id=x_user_id,
+        authorization=authorization,
+    )
     if err is not None:
         return err
 
@@ -351,11 +517,18 @@ async def patch_credential_status(
     connection_id: str,
     request: CredentialStatusPatchRequest,
     x_tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
+    x_user_id: str | None = Header(default=None, alias="X-User-Id"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> JSONResponse:
     """Update one tenant-scoped connection status."""
 
     request_id = str(uuid.uuid4())
-    tenant_id, err = _tenant_or_error(request_id=request_id, tenant_id=x_tenant_id)
+    tenant_id, _, err = _resolve_tenant_access(
+        request_id=request_id,
+        tenant_id=x_tenant_id,
+        x_user_id=x_user_id,
+        authorization=authorization,
+    )
     if err is not None:
         return err
 
@@ -376,7 +549,12 @@ async def patch_credential_status(
 
 
 @app.post("/api/run")
-async def run_ingestion(request: RunRequest) -> JSONResponse:
+async def run_ingestion(
+    request: RunRequest,
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
+    x_user_id: str | None = Header(default=None, alias="X-User-Id"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> JSONResponse:
     """Run the deterministic ingestion pipeline for a single manifest.
 
     Status codes
@@ -393,11 +571,46 @@ async def run_ingestion(request: RunRequest) -> JSONResponse:
     Every response carries an ``X-Request-Id`` header (uuid4) for tracing.
     """
     request_id = str(uuid.uuid4())
+    tenant_id, _, err = _resolve_tenant_access(
+        request_id=request_id,
+        tenant_id=x_tenant_id,
+        x_user_id=x_user_id,
+        authorization=authorization,
+    )
+    if err is not None:
+        return err
+
+    manifest = get_default_catalog().get(request.manifest_id)
+    if manifest is None:
+        return _error_response(
+            request_id=request_id,
+            status_code=400,
+            error_key="validation_failed",
+            node="request_validator",
+            reason=f"unknown manifest_id '{request.manifest_id}'",
+            details=["manifest_id not found in catalog"],
+        )
+
+    try:
+        tenant_ctx = resolve_for_run(
+            tenant_id=tenant_id,
+            connection_id=request.connection_id,
+            expected_platform=str(manifest.get("platform", "")),
+        )
+    except Exception as exc:
+        return _credentials_error_response(request_id, exc)
 
     initial_state: dict[str, Any] = {
         "manifest_id": request.manifest_id,
         "params": request.params,
-        "tenant_id": _DEFAULT_TENANT_ID,
+        "tenant_id": tenant_id,
+        "connection_id": request.connection_id,
+        "resolved_tenant": {
+            "tenant_id": tenant_ctx.tenant_id,
+            "gcp_project": tenant_ctx.gcp_project,
+            "service_account": tenant_ctx.service_account,
+            "context": tenant_ctx.context,
+        },
         "node_results": [],
         "obs_usages": [],
     }
@@ -456,6 +669,65 @@ async def run_ingestion(request: RunRequest) -> JSONResponse:
         content=formatted,
         headers={"X-Request-Id": request_id},
     )
+
+
+@app.get("/api/oauth/{provider}/authorize")
+async def oauth_authorize(
+    provider: str,
+    connection_id: str = Query(..., min_length=1),
+    name: str | None = Query(default=None),
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
+    x_user_id: str | None = Header(default=None, alias="X-User-Id"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> Response:
+    """Start OAuth authorization-code flow for one provider."""
+
+    request_id = str(uuid.uuid4())
+    tenant_id, user_id, err = _resolve_tenant_access(
+        request_id=request_id,
+        tenant_id=x_tenant_id,
+        x_user_id=x_user_id,
+        authorization=authorization,
+    )
+    if err is not None:
+        return err
+
+    try:
+        authorize_url = oauth_service.build_authorize_url(
+            provider=provider,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            connection_id=connection_id,
+            name=name,
+        )
+    except Exception as exc:
+        return _oauth_error_response(request_id, exc)
+
+    return RedirectResponse(url=authorize_url, status_code=302)
+
+
+@app.get("/api/oauth/{provider}/callback")
+async def oauth_callback(
+    provider: str,
+    code: str = Query(..., min_length=1),
+    state: str = Query(..., min_length=1),
+) -> Response:
+    """Finalize OAuth callback by exchanging code and upserting credentials."""
+
+    request_id = str(uuid.uuid4())
+    try:
+        record = await oauth_service.handle_callback(
+            provider=provider,
+            code=code,
+            state=state,
+        )
+        success_url = oauth_service.build_success_redirect_url(
+            provider=provider,
+            connection_id=record.connection_id,
+        )
+    except Exception as exc:
+        return _oauth_error_response(request_id, exc)
+    return RedirectResponse(url=success_url, status_code=302)
 
 
 @app.get("/api/catalog")

@@ -18,10 +18,6 @@ import pytest
 
 import ingestion.manifest as manifest_pkg
 import ingestion.nodes.request_validator as request_validator_module
-from ingestion.auth.tenant_context import (
-    TenantContext,
-    set_loader_for_testing,
-)
 from ingestion.graph import build_graph
 from ingestion.manifest import Catalog
 
@@ -40,29 +36,24 @@ def fixture_catalog(monkeypatch: pytest.MonkeyPatch) -> Catalog:
     return cat
 
 
-@pytest.fixture
-def stub_tenant():
-    set_loader_for_testing(
-        lambda tid: TenantContext(
-            tenant_id=tid,
-            gcp_project="monks-mds-dev",
-            service_account="mds-runner@monks-mds-dev.iam.gserviceaccount.com",
-            context={"tenant_marker": f"TENANT-{tid.upper()}"},
-        )
-    )
-    try:
-        yield
-    finally:
-        set_loader_for_testing(None)
+def _resolved_tenant(tenant_id: str = "dev") -> dict:
+    return {
+        "tenant_id": tenant_id,
+        "gcp_project": "monks-mds-dev",
+        "service_account": "mds-runner@monks-mds-dev.iam.gserviceaccount.com",
+        "context": {"tenant_marker": f"TENANT-{tenant_id.upper()}"},
+    }
 
 
-def test_graph_happy_path(fixture_catalog, stub_tenant) -> None:
+def test_graph_happy_path(fixture_catalog) -> None:
     graph = build_graph()
     final = graph.invoke(
         {
             "manifest_id": "test_mock_connector",
             "params": {"fields": ["id", "label"], "simulate_row_count": 2},
             "tenant_id": "dev",
+            "connection_id": "conn-1",
+            "resolved_tenant": _resolved_tenant("dev"),
             "node_results": [],
             "obs_usages": [],
         }
@@ -88,15 +79,15 @@ def test_graph_happy_path(fixture_catalog, stub_tenant) -> None:
     ]
 
 
-def test_graph_short_circuits_on_validation_err(
-    fixture_catalog, stub_tenant
-) -> None:
+def test_graph_short_circuits_on_validation_err(fixture_catalog) -> None:
     graph = build_graph()
     final = graph.invoke(
         {
             "manifest_id": "test_mock_connector",
             "params": {},  # missing required 'fields'
             "tenant_id": "dev",
+            "connection_id": "conn-1",
+            "resolved_tenant": _resolved_tenant("dev"),
             "node_results": [],
             "obs_usages": [],
         }
@@ -108,7 +99,7 @@ def test_graph_short_circuits_on_validation_err(
     assert nodes_executed == ["request_validator"]
 
 
-def test_graph_propagates_connector_error(fixture_catalog, stub_tenant) -> None:
+def test_graph_propagates_connector_error(fixture_catalog) -> None:
     graph = build_graph()
     final = graph.invoke(
         {
@@ -119,6 +110,8 @@ def test_graph_propagates_connector_error(fixture_catalog, stub_tenant) -> None:
                 "simulate_errors": ["api_unreachable"],
             },
             "tenant_id": "dev",
+            "connection_id": "conn-1",
+            "resolved_tenant": _resolved_tenant("dev"),
             "node_results": [],
             "obs_usages": [],
         }
@@ -136,7 +129,7 @@ def test_graph_propagates_connector_error(fixture_catalog, stub_tenant) -> None:
     assert "api_unreachable" in runner_lol["errors"]
 
 
-def test_graph_warn_on_partial(fixture_catalog, stub_tenant) -> None:
+def test_graph_warn_on_partial(fixture_catalog) -> None:
     graph = build_graph()
     final = graph.invoke(
         {
@@ -147,6 +140,8 @@ def test_graph_warn_on_partial(fixture_catalog, stub_tenant) -> None:
                 "simulate_errors": ["rate_limited_partial"],
             },
             "tenant_id": "dev",
+            "connection_id": "conn-1",
+            "resolved_tenant": _resolved_tenant("dev"),
             "node_results": [],
             "obs_usages": [],
         }

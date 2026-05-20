@@ -36,9 +36,7 @@ from typing import Any
 
 from ingestion.auth.tenant_context import (
     MissingContextKeyError,
-    TenantConfigError,
     TenantContext,
-    UnknownTenantError,
 )
 from ingestion.dispatcher.base import (
     BackendError,
@@ -50,14 +48,27 @@ from ingestion.lol import NodeLOL
 NODE_NAME = "connector_runner"
 
 
-def _resolve_tenant(tenant_id: str) -> tuple[TenantContext | None, str | None]:
-    """Resolve the tenant or return a single-line error string."""
+def _tenant_from_state(
+    tenant_id: str,
+    resolved_tenant: dict[str, Any] | None,
+) -> tuple[TenantContext | None, str | None]:
+    """Build tenant context from pre-resolved state payload."""
+
+    if not resolved_tenant:
+        return None, "resolved_tenant missing from state"
+
     try:
-        return TenantContext.resolve(tenant_id), None
-    except UnknownTenantError as exc:
-        return None, str(exc)
-    except TenantConfigError as exc:
-        return None, f"tenant config error: {exc}"
+        return (
+            TenantContext(
+                tenant_id=tenant_id,
+                gcp_project=str(resolved_tenant["gcp_project"]),
+                service_account=str(resolved_tenant.get("service_account", "")),
+                context=dict(resolved_tenant.get("context", {}) or {}),
+            ),
+            None,
+        )
+    except KeyError as exc:
+        return None, f"resolved_tenant missing required key {exc!s}"
 
 
 def _response_to_dict(resp: ConnectorResponse) -> dict[str, Any]:
@@ -76,6 +87,7 @@ def run(
     params: dict[str, Any],
     tenant_id: str,
     *,
+    resolved_tenant: dict[str, Any] | None = None,
     dispatcher: ConnectorDispatcher | None = None,
 ) -> NodeLOL:
     """Pure function: invoke the connector for a manifest + tenant.
@@ -83,7 +95,7 @@ def run(
     The graph wrapper around this function is the LangGraph node. Tests
     can call ``run`` directly with a stub dispatcher.
     """
-    tenant, err = _resolve_tenant(tenant_id)
+    tenant, err = _tenant_from_state(tenant_id, resolved_tenant)
     if err is not None:
         return NodeLOL.err(
             NODE_NAME,
@@ -164,7 +176,13 @@ def node(state: dict[str, Any]) -> dict[str, Any]:
 
     params = state.get("normalised_params") or {}
     tenant_id = state.get("tenant_id", "")
-    lol = run(manifest, params, tenant_id)
+    resolved_tenant = state.get("resolved_tenant")
+    lol = run(
+        manifest,
+        params,
+        tenant_id,
+        resolved_tenant=resolved_tenant,
+    )
 
     update: dict[str, Any] = {
         "node_results": [lol.model_dump()],
