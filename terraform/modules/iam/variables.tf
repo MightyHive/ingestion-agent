@@ -6,8 +6,8 @@ variable "project_id" {
 variable "service_accounts" {
   type = map(object({
     display_name = string
+    sa_description = optional(string, "")
     roles        = list(string)
   }))
-  description = "Service accounts and their roles"
   default = {}
 }

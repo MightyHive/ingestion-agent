@@ -16,6 +16,7 @@ variable "service_accounts" {
   type = map(object({
     display_name = string
     roles        = list(string)
+    sa_description = optional(string, "")
   }))
   default = {}
 }
