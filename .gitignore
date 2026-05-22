@@ -62,4 +62,24 @@ frontend/*.py[cod]
 frontend/$py.class
 frontend/env/   
 
+# Terraform state local 
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
 terraform.tfvars
+*.auto.tfvars
+ 
+# Directorio de init local
+.terraform/
+.terraform.lock.hcl
+ 
+# Crash logs
+crash.log
+crash.*.log
+ 
+# Override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+ 

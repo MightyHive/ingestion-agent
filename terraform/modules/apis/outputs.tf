@@ -1,3 +1,3 @@
 output "enabled_apis" {
-  value = keys(google_project_service.apis)
+  value = {for k, v in google_project_service.apis : k => v.service}
 }

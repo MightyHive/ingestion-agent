@@ -2,26 +2,7 @@ variable "project_id" {
   type = string
 }
 
-variable "region" {
-  type = string
-  default = "us-central1"
-}
-
-variable "apis" {
-  type = list(string)
-  default = []
-}
-
-variable "service_accounts" {
-  type = map(object({
-    display_name = string
-    roles        = list(string)
-  }))
-  default = {}
-}
-
 variable "cloud_functions" {
-  description = "Map of Cloud Functions v2 to deploy"
   type = map(object({
     region      = string
     runtime     = string

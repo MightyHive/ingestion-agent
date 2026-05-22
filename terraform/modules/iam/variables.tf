@@ -8,5 +8,6 @@ variable "service_accounts" {
     display_name = string
     roles        = list(string)
   }))
-  description = "Service accounts y sus roles"
+  description = "Service accounts and their roles"
+  default = {}
 }

@@ -5,5 +5,6 @@ variable "project_id" {
 
 variable "apis" {
   type        = list(string)
-  description = "Lista de APIs a habilitar"
+  description = "List of GCP APIs to enable"
+  default = []
 }
