@@ -303,30 +303,68 @@ Resultado: `POST /api/run` es **un endpoint nuevo y limpio**, sync JSON. Los SSE
 
 ---
 
-## Fase 5 — Producción: HTTPBackend + Secret Manager + Cloud Functions
+## Fase 5 — Producción MVP: HTTPBackend + Cloud Function + Secret Manager (single-project)
 
-**Objetivo:** que mds en producción ejecute conectores reales en proyectos GCP de clientes.
+**Objetivo:** que mds en producción ejecute conectores reales contra la API del proveedor, con credenciales de múltiples clientes resueltas dinámicamente, y que escriba el resultado a BigQuery — todo dentro de **un único proyecto GCP propio de Monks/mds**.
+
+**Cambio de alcance (2026-05-12):** la versión previa de esta fase asumía un setup multi-project con impersonation cross-project (cada cliente en su propio GCP, mds impersonando el SA del cliente). Se simplificó a single-project para validar el flujo HTTP backend end-to-end primero, sin meterse con la complejidad de IAM cross-project. El aislamiento por GCP de cliente queda **fuera del scope de este refactor**; si más adelante un cliente requiere que sus credenciales no salgan de su nube, se evalúa entonces como un proyecto aparte.
+
+### Setup que asume el MVP
+
+- **Un único proyecto GCP propio** (de Monks/mds). Todo vive ahí.
+- **Secret Manager** en ese proyecto con las credenciales de **2 clientes piloto** para DV360. Separación por convención de naming (p. ej. `client_<id>_dv360_<key>`); el `tenant_id` resuelve qué set de secretos leer.
+- **Una Cloud Function** deployada en el mismo proyecto, con el código del conector DV360. Misma lógica de fetch que vive en `connectors-library/dv360/`, packageada como CF.
+- **BigQuery destino** en el mismo proyecto. Un dataset por cliente (p. ej. `bronze_client_a`, `bronze_client_b`).
+- **Conector elegido:** DV360 (no Facebook como decía el plan anterior).
+- **El backend NO toca credenciales ni escribe a BigQuery directamente.** Solo coordina: resuelve qué tenant, arma el payload, invoca la CF, mapea la respuesta para el frontend.
+- **La CF es quien:** lee credenciales de Secret Manager según el `tenant_id` recibido en el payload, llama a la API de DV360, escribe los records al `target_table` indicado en el payload, y devuelve metadata + preview al backend.
+
+### Flujo de una corrida
+
+1. Frontend manda `POST /api/run` con header `X-Tenant-Id: <client_id>` (Mili agrega un dropdown de clientes) + body `{manifest_id, params}`.
+2. Backend resuelve tenant (`TenantContext.resolve(tenant_id)`). Esto carga la config del tenant (nombres de secretos, dataset destino, URL de la CF) — **NO** las credenciales del cliente.
+3. Backend ejecuta el grafo determinístico: `request_validator → data_architect (genera DDL + target_table) → connector_runner (con HTTPBackend) → format_response`.
+4. `HTTPBackend.invoke` hace `POST` a la URL de la CF con payload `{tenant_id, manifest_id, fields, params, target_table}` — **sin credenciales**.
+5. La CF:
+   - Lee de Secret Manager las credenciales del tenant (refresh_token, advertiser_id, etc.).
+   - Invoca la API de DV360 con esas credenciales.
+   - Escribe los records al `target_table` en BigQuery del mismo proyecto.
+   - Devuelve al backend `{row_count, rows_preview, target_table, meta, errors, diagnostics}` — **sin la data completa**, solo el preview (25 filas) y la metadata.
+6. Backend recibe esa metadata, la mapea al shape de `formatted_response` que el frontend ya espera, y responde al frontend con `200` (o WARN/ERR según `last_status` del grafo).
 
 ### Tareas
 
-- [ ] `src/ingestion/dispatcher/http.py` — HTTPBackend que firma id_tokens y POSTea a la URL del CF.
-- [ ] Wiring de impersonación: `TenantContext` carga el SA del cliente y `HTTPBackend.invoke` usa `google.auth.impersonated_credentials`.
-- [ ] `TenantContext.resolve()` ya no lee YAML — pasa a leer de la DB de mds (o Secret Manager de mds).
-- [ ] Permission setup en GCP del cliente: SA de mds-prod tiene `roles/cloudfunctions.invoker` + `roles/iam.serviceAccountTokenCreator` sobre el SA del cliente.
-- [ ] Deploy de la primera CF en el proyecto del primer cliente real: `scripts/deploy_connector.sh meta/facebook <project-id>`.
-- [ ] El manifest del conector apunta al endpoint deployado.
-- [ ] Validar en staging que `MDS_RUNTIME=http` ejecuta vía CF y devuelve los mismos records que `MDS_RUNTIME=local`.
+- [ ] `src/ingestion/dispatcher/http.py` — `HTTPBackend` que POSTea a la URL de la CF. Autenticación interna de GCP (id_token firmado por la SA del backend, validado por la CF). Sin impersonación cross-project (mismo proyecto, alcanza con auth interna).
+- [ ] `src/ingestion/auth/tenant_context.py`: hoy lee `~/.mds/tenants.json` / `MDS_TENANTS_FILE`. Pasa a leer de un secreto meta-config en Secret Manager (p. ej. `mds_tenants_config`) que mapea `tenant_id` → `{secrets_prefix, target_dataset, cf_url, …}`. Sigue **NO** leyendo credenciales del cliente — solo nombres/referencias.
+- [ ] `src/api.py`: el handler de `/api/run` lee `X-Tenant-Id` del header (en vez de `_DEFAULT_TENANT_ID = "dev"`). Si el header falta, `400 missing_tenant`. **Cambio frontend-facing chico** — coordinar con Mili (dropdown de clientes en la UI).
+- [ ] **Código de la Cloud Function** (en `connectors-library/dv360/` o en un repo aparte para "deployable CFs", a definir): recibe el payload, lee Secret Manager, llama DV360, escribe a BigQuery, devuelve preview + metadata.
+- [ ] **Setup IAM en el proyecto propio:**
+  - SA del backend `mds-backend@…` con `roles/cloudfunctions.invoker` (para invocar la CF).
+  - SA de la CF `mds-connector-dv360@…` con `roles/secretmanager.secretAccessor` (para leer credenciales) + `roles/bigquery.dataEditor` sobre los datasets `bronze_client_*` (para escribir).
+- [ ] **Secret Manager — carga inicial:** credenciales DV360 de cliente A y cliente B, con la naming convention documentada en un README del proyecto GCP.
+- [ ] **BigQuery — preparación:** datasets `bronze_client_a`, `bronze_client_b` creados con location adecuada.
+- [ ] **Deploy de la CF de DV360** al proyecto propio (`scripts/deploy_connector.sh dv360` — script a crear).
+- [ ] **Manifest de DV360**: `endpoint.cloud_function_name` apunta a la CF deployada en el proyecto propio.
+- [ ] **Validación end-to-end:** desde el frontend, con el dropdown de clientes, correr DV360 contra A y B; verificar que las tablas `bronze_client_a.dv360_<…>` y `bronze_client_b.dv360_<…>` quedan pobladas; verificar que el preview en pantalla coincide con las primeras filas de cada tabla.
+- [ ] **Actualizar `docs/api.md`**: nuevo header `X-Tenant-Id` obligatorio en `/api/run`, nota de que `/api/run` ahora escribe a BigQuery, removida la nota "no escribe a BQ todavía", changelog entry de Fase 5 ✅.
 
 ### Criterios de "done"
 
-- En producción, `MDS_RUNTIME=http` y un cliente real ejecuta Facebook insights vía CF.
-- Las credenciales del cliente nunca pasaron por mds.
-- Logs de la CF aparecen en el proyecto del cliente, no en mds.
+- `MDS_RUNTIME=http` en el deploy de producción del backend, y un usuario puede correr DV360 contra Cliente A y Cliente B desde el frontend, viendo el preview + row_count en pantalla y las tablas pobladas en BigQuery.
+- Las credenciales nunca pasan por el backend de mds — solo viajan dentro de la CF, leídas directamente de Secret Manager.
+- Roll-back: setear `MDS_RUNTIME=local` vuelve al LocalBackend instantáneamente. Si la CF falla, el endpoint devuelve `502 connector_failed` con `X-Request-Id` para trace.
 
 ### Riesgos
 
-- IAM cross-project es delicado. Mitigación: un cliente piloto, runbook documentado, escalación clara.
-- Cold starts de las CFs. Mitigación: medir latencias; si es problema, considerar min instances.
+- **Tamaño del payload de respuesta de la CF.** Cloud Functions tiene un límite de ~32MB en el response. Mitigación: la CF escribe a BQ y devuelve solo metadata + preview (25 filas). La data completa nunca viaja al backend.
+- **Cold starts de la CF.** Primera invocación lenta (~2-5s). Mitigación: medir; si molesta UX, `min instances=1`.
+- **Secret Manager rate limits.** Una lectura por request es bajo, no preocupa para MVP. Si la CF escala mucho, considerar caché en memoria de la CF (TTL corto).
+- **Idempotencia / dobles inserts a BQ.** Si el frontend reintenta una request, podemos escribir los mismos records dos veces. Mitigación para MVP: aceptar duplicados conocidos (el destino es Bronze, la dedup se hace en Silver). Para hardening posterior, agregar un `request_id` idempotente que la CF use como key en un MERGE.
+
+### Fuera del scope (deliberadamente diferido, no es una fase posterior planificada)
+
+- **Multi-project / cliente-en-su-propio-GCP.** El modelo "cada cliente en su propio GCP, mds impersona la SA del cliente vía `google.auth.impersonated_credentials`, IAM cross-project con `roles/iam.serviceAccountTokenCreator`" queda fuera del refactor. Si un cliente eventualmente requiere que sus credenciales no salgan de su nube, se evalúa entonces — pero no bloquea la salida del MVP ni está planificado como Fase 5.5.
+- **Tests automatizados de la CF en el ciclo de CI del backend.** El backend testea contra `HTTPBackend` con `httpx` mockeado. La CF se valida con smoke manual en su propio proyecto durante este MVP.
 
 ---
 

@@ -70,6 +70,19 @@ class RunRequest(BaseModel):
     the valid keys for ``params`` (including the ``one_of`` constraints and
     the required ``fields`` entry) are documented per manifest in
     ``GET /api/catalog/{id}``.
+
+    The optional ``tenant_id`` selects which row of ``~/.mds/tenants.json``
+    is loaded by ``TenantContext.resolve``. When omitted, we fall back to
+    ``_DEFAULT_TENANT_ID`` (``"dev"``) so the existing Phase 3/4 smoke
+    flows keep working without a frontend change. Once Mili surfaces a
+    tenant selector, the frontend should always pass it explicitly.
+
+    ``params.target_table`` is an optional override for the destination
+    BigQuery table. When omitted, ``data_architect`` substitutes the
+    manifest's ``table_naming.bronze_pattern`` — including the new
+    ``{tenant_id}`` token — so the default becomes
+    ``bronze.<connector>_<tenant_id>`` and the frontend can show it
+    before the user submits.
     """
 
     manifest_id: str = Field(
@@ -77,11 +90,20 @@ class RunRequest(BaseModel):
         min_length=1,
         description="Globally unique manifest id as exposed by GET /api/catalog.",
     )
+    tenant_id: str | None = Field(
+        default=None,
+        description=(
+            "Tenant key that selects the row of ~/.mds/tenants.json to use. "
+            "When None, the backend falls back to its default tenant (currently 'dev'). "
+            "Also used to substitute the {tenant_id} token in bronze_pattern."
+        ),
+    )
     params: dict[str, Any] = Field(
         default_factory=dict,
         description=(
             "Connector parameters. Must include 'fields' (list of selectable "
             "available_fields names; empty list means 'all selectable'). "
+            "May also include 'target_table' to override the default BQ destination. "
             "Other keys must match the manifest's params schema."
         ),
     )
@@ -178,10 +200,15 @@ async def run_ingestion(request: RunRequest) -> JSONResponse:
     """
     request_id = str(uuid.uuid4())
 
+    # Tenant resolution: request body wins; otherwise we use the default
+    # (Phase 3/4 carry-over). A blank string from the frontend is treated
+    # as "not provided" so an empty input field doesn't crash the graph.
+    tenant_id = (request.tenant_id or "").strip() or _DEFAULT_TENANT_ID
+
     initial_state: dict[str, Any] = {
         "manifest_id": request.manifest_id,
         "params": request.params,
-        "tenant_id": _DEFAULT_TENANT_ID,
+        "tenant_id": tenant_id,
         "node_results": [],
         "obs_usages": [],
     }

@@ -1,0 +1,41 @@
+# Files excluded from `gcloud functions deploy --source=.`
+#
+# Everything else in this directory IS shipped to the Cloud Function
+# runtime, so deploy.sh stages connector files in before invoking
+# gcloud and removes them in --clean.
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Tests stay in the repo, never in the deploy artifact
+test_*.py
+*_test.py
+tests/
+
+# Local dev artifacts
+.venv/
+venv/
+.python-version
+.env
+.env.local
+
+# Editor / OS noise
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Local build artifacts produced by deploy.sh stage
+staged.lock
+
+# Documentation
+README.md
+*.md
+
+# Local logs and run outputs
+*.log
+logs/

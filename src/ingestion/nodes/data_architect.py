@@ -139,11 +139,25 @@ def _render_column(field: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
-def _resolve_table_name(manifest: dict[str, Any]) -> str:
+def _resolve_table_name(
+    manifest: dict[str, Any], *, tenant_id: str | None = None
+) -> str:
     """Substitute bronze_pattern tokens.
 
-    Tokens: ``{platform}``, ``{connector}``, ``{id}``, ``{version_major}``.
-    Default pattern is ``bronze.{id}`` per schema.json.
+    Tokens: ``{platform}``, ``{connector}``, ``{id}``, ``{version_major}``,
+    ``{tenant_id}``. Default pattern is ``bronze.{id}`` per schema.json.
+
+    The ``{tenant_id}`` token was added in Phase 5 so that a single
+    connector deployment can land each tenant's data into its own
+    BigQuery table (``bronze.meta_facebook_ad_insights_cliente1`` /
+    ``..._cliente2``). When the manifest's ``bronze_pattern`` does not
+    reference ``{tenant_id}``, this parameter is ignored — backwards
+    compatible with the Phase 3/4 single-tenant layout.
+
+    ``tenant_id`` is sanitised lightly (lowercased; ``-``/spaces → ``_``)
+    so it produces a valid BigQuery identifier. We keep it minimal so
+    that operators can audit the mapping from ``tenants.json`` to the
+    table name at a glance.
     """
     pattern = (manifest.get("table_naming") or {}).get(
         "bronze_pattern", "bronze.{id}"
@@ -155,6 +169,7 @@ def _resolve_table_name(manifest: dict[str, Any]) -> str:
         "connector": manifest.get("connector", ""),
         "id": manifest["id"],
         "version_major": version_major,
+        "tenant_id": _sanitise_bq_token(tenant_id or ""),
     }
     try:
         return pattern.format(**tokens)
@@ -163,6 +178,19 @@ def _resolve_table_name(manifest: dict[str, Any]) -> str:
             f"unknown token {exc!s} in bronze_pattern '{pattern}'. "
             f"Allowed: {sorted(tokens)!r}"
         ) from exc
+
+
+def _sanitise_bq_token(value: str) -> str:
+    """Normalise a string for safe substitution into a BQ table identifier.
+
+    BigQuery identifiers accept ``[A-Za-z0-9_]``. We lowercase, replace
+    spaces/dashes with underscores, and drop everything else. We do NOT
+    raise here — the validator (or BQ itself) will reject a fully empty
+    or otherwise pathological table name downstream, and we want this
+    helper to stay side-effect-free for unit tests.
+    """
+    cleaned = value.strip().lower().replace("-", "_").replace(" ", "_")
+    return "".join(ch for ch in cleaned if ch.isalnum() or ch == "_")
 
 
 def _resolve_columns(
@@ -193,6 +221,7 @@ def to_ddl(
     selected_fields: list[str],
     *,
     table_target: str | None = None,
+    tenant_id: str | None = None,
 ) -> tuple[str, str, list[dict[str, Any]]]:
     """Emit the BigQuery ``CREATE TABLE`` for a manifest + selection.
 
@@ -205,8 +234,15 @@ def to_ddl(
         Names of fields the user wants. Non-selectable fields are
         included automatically.
     table_target:
-        Optional explicit fully-qualified table name. When ``None`` we
-        substitute ``bronze_pattern`` from the manifest.
+        Optional explicit fully-qualified table name. Takes precedence
+        over the manifest's ``bronze_pattern`` substitution. The
+        frontend exposes this via ``params.target_table`` so the user
+        can override the default table name (e.g. to land in a
+        sandbox dataset for a one-off backfill).
+    tenant_id:
+        Used to substitute the ``{tenant_id}`` token in
+        ``bronze_pattern``. Only consulted when ``table_target`` is
+        not provided. See :func:`_resolve_table_name`.
 
     Returns
     -------
@@ -219,7 +255,7 @@ def to_ddl(
         unknown bronze_pattern token. The validator should normally
         have caught these; we re-raise so the bug is loud.
     """
-    table = table_target or _resolve_table_name(manifest)
+    table = table_target or _resolve_table_name(manifest, tenant_id=tenant_id)
     columns = _resolve_columns(manifest, selected_fields)
     if not columns:
         raise ValueError(
@@ -275,9 +311,25 @@ def to_ddl(
 # ---------------------------------------------------------------------------
 
 def node(state: dict[str, Any]) -> dict[str, Any]:
-    """LangGraph entrypoint. Reads ``manifest`` + ``selected_fields``."""
+    """LangGraph entrypoint. Reads ``manifest`` + ``selected_fields``.
+
+    Phase 5 additions:
+
+    * ``params.target_table`` (user override from the frontend) is
+      forwarded as ``table_target`` so it wins over the manifest
+      substitution.
+    * ``state.tenant_id`` feeds the ``{tenant_id}`` token of
+      ``bronze_pattern`` so multi-tenant deployments land in
+      per-tenant tables by default.
+    """
     manifest = state.get("manifest")
     selected_fields = state.get("selected_fields") or []
+    tenant_id = state.get("tenant_id")
+    params = state.get("params") or {}
+    user_target = params.get("target_table")
+    user_target = user_target.strip() if isinstance(user_target, str) else None
+    if not user_target:
+        user_target = None
     if not manifest:
         # Validator should have populated this; guard anyway.
         lol = NodeLOL.err(
@@ -291,7 +343,12 @@ def node(state: dict[str, Any]) -> dict[str, Any]:
             "final_error": lol.reason,
         }
     try:
-        ddl_text, table, columns = to_ddl(manifest, selected_fields)
+        ddl_text, table, columns = to_ddl(
+            manifest,
+            selected_fields,
+            table_target=user_target,
+            tenant_id=tenant_id,
+        )
     except ValueError as exc:
         lol = NodeLOL.err(
             NODE_NAME,

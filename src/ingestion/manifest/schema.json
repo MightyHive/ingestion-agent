@@ -215,7 +215,7 @@
         "bronze_pattern": {
           "type": "string",
           "default": "bronze.{id}",
-          "description": "Bronze layer table naming pattern. Tokens: {platform}, {connector}, {id}, {version_major}."
+          "description": "Bronze layer table naming pattern. Tokens: {platform}, {connector}, {id}, {version_major}, {tenant_id}. The {tenant_id} token is substituted at run-time from the active tenant key so multi-tenant deployments can land each customer's data into its own table (e.g. bronze.meta_facebook_ad_insights_cliente1)."
         },
         "partition_field": {
           "type": "string",

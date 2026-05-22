@@ -1,12 +1,18 @@
 {
+  "_comment_path": "Copy this file to ~/.mds/tenants.json on your machine (NOT here) and run: chmod 600 ~/.mds/tenants.json",
+  "_comment_runtime": "The MDS backend reads ~/.mds/tenants.json by default. Override path with MDS_TENANTS_FILE env var.",
+  "_comment_secrets": "For Fase 5 (HTTPBackend / Cloud Function connectors) keep 'context' empty: secrets live in Secret Manager under 'client_<tenant_id>_<platform>_<key>' and the CF resolves them with its own SA. Only LocalBackend / dev mode needs credentials inline.",
+  "_comment_security": "NEVER commit a populated tenants.json. It is gitignored at config/tenants.json. If real credentials end up here, rotate them.",
   "tenants": {
     "dev": {
-      "gcp_project": "YOUR_GCP_PROJECT_ID",
-      "service_account": "mds-runner@YOUR_GCP_PROJECT_ID.iam.gserviceaccount.com",
-      "context": {
-        "ad_account_id": "YOUR_META_AD_ACCOUNT_ID",
-        "access_token": "YOUR_META_ACCESS_TOKEN"
-      }
+      "gcp_project": "monks-mds-dev",
+      "service_account": "mds-cf-meta@monks-mds-dev.iam.gserviceaccount.com",
+      "context": {}
+    },
+    "cliente1": {
+      "gcp_project": "monks-mds-dev",
+      "service_account": "mds-cf-meta@monks-mds-dev.iam.gserviceaccount.com",
+      "context": {}
     }
   }
 }

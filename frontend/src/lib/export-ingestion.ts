@@ -2,6 +2,7 @@ import { fetchCatalog, fetchManifest, runIngestion } from "@/lib/api/catalog"
 import { buildDefaultRunParams } from "@/lib/manifest-default-params"
 import type { CatalogConnector, Manifest } from "@/lib/stores/connectorStore"
 import type { SavedTemplate } from "@/lib/stores/templateStore"
+import { getActiveTenantId } from "@/lib/stores/tenantStore"
 
 const IS_MOCK = process.env.NEXT_PUBLIC_MOCK === "true"
 
@@ -112,7 +113,13 @@ export async function runTemplateIngestion(
   const manifestId = await resolveManifestId(template)
   const manifest = (await fetchManifest(manifestId)) as Manifest
   const params = buildRunParamsFromTemplate(manifest, template, options)
-  const body = await runIngestion(manifestId, params)
+
+  // Nivel 3: user-defined override (saved alongside the template) wins over backend default.
+  const override = template.targetTableOverride?.trim()
+  if (override) params.target_table = override
+
+  const tenantId = getActiveTenantId()
+  const body = await runIngestion(manifestId, params, tenantId)
 
   const errors = Array.isArray(body.errors) ? (body.errors as string[]) : []
   return {

@@ -17,19 +17,28 @@ function escapeSqlString(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
 }
 
+/** Mirrors backend `_sanitise_bq_token`: lowercase, dashes/spaces → `_`, drop non-`[a-z0-9_]`. */
+function sanitiseBqToken(value: string): string {
+  const cleaned = value.trim().toLowerCase().replace(/-/g, "_").replace(/\s+/g, "_")
+  return cleaned.replace(/[^a-z0-9_]/g, "")
+}
+
 function resolveTableName(
   manifest: Manifest | null,
   connectorId: string,
-  reportingLevel: string | null
+  reportingLevel: string | null,
+  tenantId?: string | null
 ): string {
   const pattern = manifest?.table_naming?.bronze_pattern?.trim()
   if (pattern) {
     const id = manifest?.id ?? connectorId
     const platform = manifest?.platform ?? connectorId
+    const tenant = sanitiseBqToken(tenantId ?? "")
     const substituted = pattern
       .replace(/\{id\}/g, id)
       .replace(/\{platform\}/g, platform)
       .replace(/\{connector\}/g, platform)
+      .replace(/\{tenant_id\}/g, tenant)
     const segment = substituted.split(".").pop()?.trim()
     if (segment) return segment
   }
@@ -87,8 +96,17 @@ export function buildTemplateProposalFromSelection(opts: {
   fields: readonly FieldRow[]
   manifest: Manifest | null
   reportingLevel?: string | null
+  /** Active tenant — substituted into `{tenant_id}` in the manifest's `bronze_pattern`. */
+  tenantId?: string | null
 }): TemplateProposal {
-  const { connectorId, selectedIds, fields, manifest, reportingLevel = null } = opts
+  const {
+    connectorId,
+    selectedIds,
+    fields,
+    manifest,
+    reportingLevel = null,
+    tenantId = null,
+  } = opts
   const idSet = new Set(selectedIds)
   const selectedFromRows = fields.filter((f) => idSet.has(f.id))
 
@@ -103,7 +121,7 @@ export function buildTemplateProposalFromSelection(opts: {
     throw new Error("No matching fields for the current selection.")
   }
 
-  const tableName = resolveTableName(manifest, connectorId, reportingLevel)
+  const tableName = resolveTableName(manifest, connectorId, reportingLevel, tenantId)
 
   return {
     tableName,

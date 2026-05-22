@@ -15,6 +15,20 @@ on first invocation, plus any extra search paths provided via the
 ``PYTHONPATH``). Tests use the env var to register a fixture directory
 without polluting the real submodule.
 
+In addition, the directory that *contains* the module being imported is
+prepended to ``sys.path`` per-invocation. Real connectors (e.g.
+``meta/facebook/facebook_ads.py``) use top-level imports such as
+``from api_handler import ApiHandler`` because they are deployed at the
+Cloud Function root in production. LocalBackend mimics that environment
+by ensuring the connector's own directory is importable so those flat
+imports resolve. See ``_seed_module_dir`` for details and a caveat about
+name collisions when two connectors ship a sibling module with the same
+top-level name (e.g. both ``meta/facebook/api_handler.py`` and
+``meta/ig/api_handler.py``): whichever is imported first wins the
+``sys.modules["api_handler"]`` slot for the remainder of the process.
+This is a Phase 2-4 artefact and disappears in Phase 5 when HTTPBackend
+takes over and connectors never share an interpreter.
+
 Failure mapping
 ---------------
 Every internal exception is wrapped in :class:`BackendError` so callers
@@ -75,6 +89,53 @@ def _seed_sys_path() -> None:
             _ensure_path(Path(entry.strip()).expanduser())
 
 
+def _seed_module_dir(module_path: str) -> None:
+    """Prepend the directory containing ``module_path`` to ``sys.path``.
+
+    Connector modules that ship in ``connectors-library/`` are designed to
+    live at the root of a Cloud Function, so they use *top-level* imports
+    for sibling files (``from api_handler import ApiHandler``). When the
+    LocalBackend imports them as a sub-package (e.g. as
+    ``meta.facebook.facebook_ads``), only the library root is on
+    ``sys.path``, so those flat imports raise ``ModuleNotFoundError``.
+
+    This function resolves the package portion of ``module_path``
+    (``meta.facebook`` → ``meta/facebook``) against every known search
+    root (``DEFAULT_LIBRARY_ROOT`` plus ``MDS_LOCAL_BACKEND_PATHS``) and
+    inserts every existing match at the front of ``sys.path``. The
+    ``import_module`` call that follows then sees the connector's sibling
+    files as importable top-level modules — exactly like the CF runtime.
+
+    No-op when ``module_path`` has no dots (no parent package to seed).
+
+    Known caveat: if two connectors expose a sibling module with the same
+    name (the canonical case being ``api_handler.py`` in every connector
+    directory), Python caches the first one imported under that name in
+    ``sys.modules`` and subsequent ``import api_handler`` calls return
+    the cached copy — even across different connectors. There is no
+    isolation at the interpreter level. This is acceptable in Phase 2-4
+    because today only one connector (Meta Facebook) is wired end-to-end;
+    revisit before adding a second connector with a colliding sibling
+    name. Phase 5 (HTTPBackend) eliminates the problem entirely because
+    each connector runs in its own CF process.
+    """
+    if "." not in module_path:
+        return
+    pkg_parts = module_path.split(".")[:-1]
+    pkg_relpath = Path(*pkg_parts)
+
+    roots: list[Path] = [DEFAULT_LIBRARY_ROOT]
+    extra = os.environ.get("MDS_LOCAL_BACKEND_PATHS", "")
+    for entry in extra.split(":"):
+        if entry.strip():
+            roots.append(Path(entry.strip()).expanduser())
+
+    for root in roots:
+        candidate = root / pkg_relpath
+        if candidate.exists():
+            _ensure_path(candidate)
+
+
 class LocalBackend(BackendBase):
     """Imports and calls the connector module described by the manifest.
 
@@ -100,7 +161,19 @@ class LocalBackend(BackendBase):
                 f"manifest '{manifest.get('id')}' has no endpoint.module_path"
             )
 
+        # Enforce auth.context_required HERE (Phase 5 refactor): the
+        # in-process backend is the only path that actually reads the
+        # tenant context, so this is where the check belongs. HTTPBackend
+        # never touches tenant.context — the CF resolves its own secrets
+        # via Secret Manager. See ``ConnectorDispatcher.invoke`` docstring
+        # for the full rationale.
+        required_keys = list(
+            (manifest.get("auth") or {}).get("context_required", []) or []
+        )
+        tenant.assert_satisfies(required_keys)
+
         _seed_sys_path()
+        _seed_module_dir(module_path)
 
         try:
             module = importlib.import_module(module_path)

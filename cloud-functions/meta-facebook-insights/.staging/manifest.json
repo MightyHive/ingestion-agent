@@ -1,0 +1,120 @@
+{
+  "id": "meta_facebook_ad_insights",
+  "name": "Facebook Ads — Ad-level Insights",
+  "platform": "meta",
+  "connector": "facebook",
+  "version": "0.1.0",
+  "status": "alpha",
+  "description": "Daily ad-level performance insights from the Meta Marketing API (Facebook). The underlying connector also returns campaign- and adset-level rollups in the same call; those will be exposed via separate manifests in the future. The format_response node will read records.ads from the connector response and emit it to BigQuery as defined in table_naming.",
+  "owner": "Ivan Krawchik",
+  "endpoint": {
+    "module_path": "meta.facebook.facebook_ads",
+    "function_name": "fetch",
+    "cloud_function_name": "meta-facebook-insights",
+    "cloud_function_region": "us-central1"
+  },
+  "auth": {
+    "context_required": ["ad_account_id", "access_token"],
+    "secrets": [
+      {
+        "context_key": "access_token",
+        "secret_id": "meta-access-token",
+        "version": "latest"
+      }
+    ],
+    "scopes": ["ads_read", "read_insights"]
+  },
+  "params": {
+    "required": [
+      {
+        "name": "fields",
+        "type": "field_list",
+        "description": "List of available_fields names to retrieve. If empty, all selectable fields for the ad level are returned."
+      }
+    ],
+    "optional": [
+      {
+        "name": "days_back",
+        "type": "integer",
+        "default": 14,
+        "minimum": 1,
+        "maximum": 90,
+        "description": "Number of days back from today. Used when neither (date_start, date_stop) nor (since, until) are provided."
+      },
+      {
+        "name": "date_start",
+        "type": "date",
+        "description": "ISO date — inclusive lower bound of the report window. Use together with date_stop."
+      },
+      {
+        "name": "date_stop",
+        "type": "date",
+        "description": "ISO date — inclusive upper bound of the report window. Use together with date_start."
+      },
+      {
+        "name": "since",
+        "type": "date",
+        "description": "Alias of date_start (kept for compatibility with the Instagram connector pattern)."
+      },
+      {
+        "name": "until",
+        "type": "date",
+        "description": "Alias of date_stop (kept for compatibility with the Instagram connector pattern)."
+      }
+    ],
+    "one_of": [
+      ["days_back"],
+      ["date_start", "date_stop"],
+      ["since", "until"]
+    ]
+  },
+  "available_fields": [
+    {"name": "account_id",     "type": "STRING",    "description": "Meta ad account id (without the 'act_' prefix)."},
+    {"name": "account_name",   "type": "STRING"},
+    {"name": "campaign_id",    "type": "STRING"},
+    {"name": "campaign_name",  "type": "STRING"},
+    {"name": "objective",      "type": "STRING",    "description": "Campaign-level objective (e.g. OUTCOME_TRAFFIC)."},
+    {"name": "created_time",   "type": "DATE",      "description": "Date the ad was created. Meta's Insights endpoint truncates to YYYY-MM-DD for this field (no time component); kept as DATE in BQ to match. If a future connector version returns full timestamps, promote this to TIMESTAMP and recreate the BQ table."},
+    {"name": "adset_id",       "type": "STRING"},
+    {"name": "adset_name",     "type": "STRING"},
+    {"name": "ad_id",          "type": "STRING"},
+    {"name": "ad_name",        "type": "STRING"},
+    {"name": "date_start",     "type": "DATE",      "selectable": false, "description": "Lower bound of the daily increment. Always returned by the connector when time_increment is set."},
+    {"name": "date_stop",      "type": "DATE",      "selectable": false, "description": "Upper bound of the daily increment. Always returned."},
+    {"name": "impressions",    "type": "FLOAT64",   "description": "Cast from string to float by the connector."},
+    {"name": "full_view_impressions", "type": "FLOAT64"},
+    {"name": "full_view_reach",       "type": "FLOAT64"},
+    {"name": "reach",          "type": "FLOAT64"},
+    {"name": "spend",          "type": "NUMERIC",   "description": "Spend in account currency. Cast from string to float by the connector."},
+    {"name": "clicks",         "type": "FLOAT64"},
+    {"name": "frequency",      "type": "FLOAT64"},
+    {"name": "cpm",            "type": "FLOAT64"},
+    {"name": "cpc",            "type": "FLOAT64"},
+    {"name": "cpp",            "type": "FLOAT64"},
+    {"name": "ctr",            "type": "FLOAT64"},
+    {"name": "video_p25_watched_actions",  "type": "JSON", "description": "Array of {action_type, value} objects."},
+    {"name": "video_p50_watched_actions",  "type": "JSON"},
+    {"name": "video_p75_watched_actions",  "type": "JSON"},
+    {"name": "video_p100_watched_actions", "type": "JSON"},
+    {"name": "video_play_actions",         "type": "JSON"},
+    {"name": "ad_click_actions",           "type": "JSON"},
+    {"name": "actions",                    "type": "JSON", "description": "Array of {action_type, value} objects flattened by Meta."},
+    {"name": "conversions",                "type": "JSON"}
+  ],
+  "table_naming": {
+    "bronze_pattern": "bronze.meta_facebook_ad_insights_{tenant_id}",
+    "partition_field": "date_start",
+    "partition_type": "DAY",
+    "clustering_fields": ["account_id", "campaign_id"]
+  },
+  "limits": {
+    "max_records_per_call": 200000,
+    "max_call_duration_seconds": 540,
+    "rate_limit_qps": 5
+  },
+  "metadata": {
+    "api_reference": "https://developers.facebook.com/docs/marketing-api/insights",
+    "graph_api_version": "v23.0",
+    "response_subkey": "ads"
+  }
+}

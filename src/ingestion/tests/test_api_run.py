@@ -131,6 +131,76 @@ def test_run_ok_returns_200_with_formatted_response(api_client) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 200 — Phase 5 contract: tenant_id in body + target_table override
+# ---------------------------------------------------------------------------
+
+
+def test_run_uses_explicit_tenant_id_from_request_body(api_client) -> None:
+    """When the request body carries ``tenant_id``, the resolver must
+    receive that value (not the default ``'dev'``). The stub_tenant
+    fixture echoes the requested id into ``tenant_marker`` as
+    ``TENANT-<UPPER>``, so we can verify the propagation end-to-end
+    without touching the real TenantContext loader.
+
+    The mock manifest still uses ``bronze.{id}`` (no {tenant_id}
+    token), so the table name is unaffected — that is intentional and
+    keeps this test focused on the tenant_id propagation contract.
+    """
+    resp = api_client.post(
+        "/api/run",
+        json={
+            "manifest_id": "test_mock_connector",
+            "tenant_id": "cliente1",
+            "params": {"fields": ["id", "label"], "simulate_row_count": 1},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["tenant_id"] == "cliente1"
+    assert body["rows_preview"][0]["tenant_seen"] == "TENANT-CLIENTE1"
+
+
+def test_run_blank_tenant_id_falls_back_to_default(api_client) -> None:
+    """A blank string from the frontend (empty input field) must be
+    treated as 'not provided' — falling back to the default tenant
+    — instead of crashing the graph with an unresolvable empty key.
+    """
+    resp = api_client.post(
+        "/api/run",
+        json={
+            "manifest_id": "test_mock_connector",
+            "tenant_id": "   ",  # blanks-only
+            "params": {"fields": ["id", "label"], "simulate_row_count": 1},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["tenant_id"] == "dev"
+
+
+def test_run_user_target_table_overrides_manifest_default(api_client) -> None:
+    """``params.target_table`` is a Phase 5 system param. The handler
+    must accept it (request_validator allows it via
+    ``_SYSTEM_PARAM_KEYS``) and ``data_architect`` must use it as the
+    destination, ignoring the manifest's ``bronze_pattern``.
+    """
+    resp = api_client.post(
+        "/api/run",
+        json={
+            "manifest_id": "test_mock_connector",
+            "params": {
+                "fields": ["id", "label"],
+                "simulate_row_count": 1,
+                "target_table": "sandbox.adhoc_run",
+            },
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["target_table"] == "sandbox.adhoc_run"
+
+
+# ---------------------------------------------------------------------------
 # 200 — WARN path (partial connector response)
 # ---------------------------------------------------------------------------
 

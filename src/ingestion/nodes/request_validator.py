@@ -41,6 +41,20 @@ from ingestion.manifest import Catalog, get_default_catalog
 
 NODE_NAME = "request_validator"
 
+# Phase 5 — reserved "system" param keys.
+#
+# These keys are populated by the platform itself (not by the
+# connector manifest), so the strict ``unknown params`` check below
+# must allow them. They are passed through to downstream nodes
+# verbatim: ``data_architect`` reads ``target_table`` to override the
+# default bronze_pattern substitution; future system fields (e.g.
+# ``priority``, ``dry_run``) belong here as well.
+#
+# Keeping the allow-list intentionally small means we still loudly
+# reject typos in connector-specific params, which is the validator's
+# main job.
+_SYSTEM_PARAM_KEYS: frozenset[str] = frozenset({"target_table"})
+
 
 # ---------------------------------------------------------------------------
 # Param coercion & validation primitives
@@ -320,8 +334,19 @@ def validate_request(
     declared_names = set(spec_by_name.keys())
     required_names = {s["name"] for s in required_specs if "name" in s}
 
-    # Reject unknown params — the manifest is authoritative.
-    unknown = [name for name in params.keys() if name not in declared_names]
+    # Reject unknown params — the manifest is authoritative — EXCEPT for
+    # the reserved "system" keys that the platform itself populates from
+    # request-level fields (Phase 5). The frontend exposes
+    # ``target_table`` as an override on the run form, so it shows up
+    # inside ``params`` from the wire's POV but is not part of any
+    # manifest's params schema. Treating it as "known" here lets the
+    # validator stay strict for connector-specific params without
+    # forcing every manifest to re-declare the same boilerplate.
+    unknown = [
+        name
+        for name in params.keys()
+        if name not in declared_names and name not in _SYSTEM_PARAM_KEYS
+    ]
     if unknown:
         errors.append(
             f"params: unknown keys {unknown!r}. Allowed: {sorted(declared_names)!r}"

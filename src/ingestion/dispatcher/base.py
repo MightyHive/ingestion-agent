@@ -13,10 +13,16 @@ that the same Python module can be:
 The dispatcher hides that distinction from the rest of the graph. The
 ``connector_runner`` node only ever sees :class:`ConnectorResponse`.
 
-The selection key is ``MDS_RUNTIME``. The default is ``local`` so a
-freshly-cloned repo runs without surprises.
+The selection key is ``MDS_RUNTIME``. Allowed values:
 
-Phase 2 only ships LocalBackend. HTTPBackend lands in Phase 5.
+* ``local`` (default): always invoke in-process.
+* ``http``: always POST to a Cloud Function URL (HTTPBackend).
+* ``auto``: per-manifest. If the manifest declares
+  ``endpoint.cloud_function_name``, use HTTP; otherwise fall back to
+  Local. This is the recommended setting while we migrate connectors
+  from Local-only to deployed-CF one at a time during Phase 5.
+
+HTTPBackend landed in Phase 5; see :mod:`ingestion.dispatcher.http`.
 
 Connector contract (recap)
 --------------------------
@@ -139,8 +145,8 @@ class ConnectorDispatcher:
     Parameters
     ----------
     runtime:
-        ``"local"`` or ``"http"``. When ``None``, reads ``MDS_RUNTIME``;
-        when that is unset, defaults to ``"local"``.
+        ``"local"``, ``"http"``, or ``"auto"``. When ``None``, reads
+        ``MDS_RUNTIME``; when that is unset, defaults to ``"local"``.
     """
 
     def __init__(self, runtime: str | None = None) -> None:
@@ -160,12 +166,14 @@ class ConnectorDispatcher:
             from ingestion.dispatcher.local import LocalBackend
             return LocalBackend()
         if runtime == "http":
-            raise BackendError(
-                "MDS_RUNTIME=http requires HTTPBackend, which lands in Phase 5. "
-                "See docs/migration-plan.md."
-            )
+            from ingestion.dispatcher.http import HTTPBackend
+            return HTTPBackend()
+        if runtime == "auto":
+            from ingestion.dispatcher.http import HTTPBackend
+            from ingestion.dispatcher.local import LocalBackend
+            return AutoBackend(local=LocalBackend(), http=HTTPBackend())
         raise BackendError(
-            f"unknown MDS_RUNTIME '{runtime}'. Allowed: 'local', 'http'."
+            f"unknown MDS_RUNTIME '{runtime}'. Allowed: 'local', 'http', 'auto'."
         )
 
     def invoke(
@@ -174,12 +182,62 @@ class ConnectorDispatcher:
         params: dict[str, Any],
         tenant: TenantContext,
     ) -> ConnectorResponse:
-        """Delegate to the active backend, with required-key enforcement."""
-        required_keys = list(
-            (manifest.get("auth") or {}).get("context_required", []) or []
-        )
-        tenant.assert_satisfies(required_keys)
+        """Delegate to the active backend.
+
+        Note on ``auth.context_required`` enforcement
+        --------------------------------------------
+        Prior to Phase 5 the dispatcher itself called
+        ``tenant.assert_satisfies(required_keys)`` here. That made sense
+        while every connector ran in-process via :class:`LocalBackend`
+        and read its credentials out of ``tenant.context``. With
+        :class:`HTTPBackend` the CF resolves its own secrets from Secret
+        Manager using its own SA identity, so the MDS backend has no
+        reason to populate (or even know about) ``access_token`` /
+        ``ad_account_id`` for the tenant. Enforcing
+        ``context_required`` here would force operators to put dummy
+        placeholders in ``tenants.json`` just to silence the check.
+
+        The validation now lives inside :class:`LocalBackend.invoke`
+        (where it can fail fast before importing the connector module),
+        while :class:`HTTPBackend.invoke` skips it entirely. AutoBackend
+        is unaffected because it just delegates.
+        """
         return self.backend.invoke(manifest, params, tenant)
+
+
+class AutoBackend(BackendBase):
+    """Routes per-manifest between Local and HTTP backends.
+
+    Selection rule (intentionally simple — we want it grep-able):
+
+    * If ``manifest.endpoint.cloud_function_name`` is present → HTTP.
+    * Otherwise → Local.
+
+    Rationale: the presence of a ``cloud_function_name`` in the manifest
+    is the explicit signal that this connector has been deployed and
+    should be invoked over the wire. Connectors still on the
+    Local-only path simply don't declare that field. This keeps the
+    Phase 5 migration incremental: we flip connectors one at a time by
+    adding the field to the manifest, with no env changes per
+    deployment.
+    """
+
+    name = "auto"
+
+    def __init__(self, *, local: BackendBase, http: BackendBase) -> None:
+        self._local = local
+        self._http = http
+
+    def invoke(
+        self,
+        manifest: dict[str, Any],
+        params: dict[str, Any],
+        tenant: TenantContext,
+    ) -> ConnectorResponse:
+        endpoint = manifest.get("endpoint") or {}
+        if endpoint.get("cloud_function_name"):
+            return self._http.invoke(manifest, params, tenant)
+        return self._local.invoke(manifest, params, tenant)
 
 
 __all__ = [

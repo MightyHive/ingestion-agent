@@ -6,6 +6,7 @@ import { useShallow } from "zustand/react/shallow"
 import { useConnectorStore } from "@/lib/stores/connectorStore"
 import type { TemplateProposal } from "@/lib/stores/connectorStore"
 import { useTemplateStore } from "@/lib/stores/templateStore"
+import { useTenantStore } from "@/lib/stores/tenantStore"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
@@ -49,9 +50,18 @@ export default function TemplateStep({
     }))
   )
   const { addTemplate } = useTemplateStore()
+  const selectedTenantId = useTenantStore((s) => s.selectedTenantId)
 
   const [saved, setSaved] = useState(false)
   const [templateName, setTemplateName] = useState("")
+  /** Editable BQ target table preview (with `{tenant_id}` already substituted). */
+  const [targetTable, setTargetTable] = useState("")
+  /**
+   * Tracks whether the user has manually edited the target table input. If they have,
+   * we stop auto-syncing it from the manifest pattern (otherwise switching tenants
+   * would clobber their custom name).
+   */
+  const [targetTableDirty, setTargetTableDirty] = useState(false)
 
   const columnsKey = useMemo(() => [...columns].sort().join("|"), [columns])
   const loading = isProposing
@@ -62,6 +72,22 @@ export default function TemplateStep({
       setTemplateName(templateProposal.tableName)
     }
   }, [templateProposal?.tableName])
+
+  /**
+   * Auto-sync the editable target-table input to the live preview (proposal.tableName,
+   * which already substitutes `{tenant_id}` via `buildTemplateProposalFromSelection`)
+   * until the user edits the field manually.
+   */
+  useEffect(() => {
+    if (targetTableDirty) return
+    if (templateProposal?.tableName) {
+      // Match the backend's fully-qualified shape ("bronze.<segment>") so the value
+      // we eventually send as `params.target_table` is valid as-is.
+      const pattern = manifest?.table_naming?.bronze_pattern?.trim() ?? ""
+      const schemaPrefix = pattern.includes(".") ? pattern.split(".")[0] + "." : ""
+      setTargetTable(`${schemaPrefix}${templateProposal.tableName}`)
+    }
+  }, [templateProposal?.tableName, manifest?.table_naming?.bronze_pattern, targetTableDirty])
 
   useEffect(() => {
     if (columns.length === 0) return
@@ -82,6 +108,10 @@ export default function TemplateStep({
   const handleApprove = useCallback(() => {
     if (!templateProposal) return
     const name = templateName.trim() || templateProposal.tableName
+    // Only persist `targetTableOverride` when the user actually customised it;
+    // otherwise leave it unset so the backend re-resolves at run time (lets the
+    // tenant chosen at run time still control the substitution).
+    const override = targetTableDirty ? targetTable.trim() || undefined : undefined
     addTemplate({
       tableName: name,
       manifestId: manifest?.id ?? connectorId ?? undefined,
@@ -89,9 +119,20 @@ export default function TemplateStep({
       endpoint: reportingLevel ?? "all",
       columns: templateProposal.columns,
       ddl: templateProposal.ddl,
+      targetTableOverride: override,
     })
     setSaved(true)
-  }, [addTemplate, platform, manifest, connectorId, templateName, templateProposal, reportingLevel])
+  }, [
+    addTemplate,
+    platform,
+    manifest,
+    connectorId,
+    templateName,
+    templateProposal,
+    reportingLevel,
+    targetTable,
+    targetTableDirty,
+  ])
 
   if (!loading && !templateProposal && !buildError && columns.length === 0) {
     return (
@@ -145,6 +186,12 @@ export default function TemplateStep({
           saved={saved}
           onApprove={handleApprove}
           onGoExport={() => router.push("/data-export")}
+          tenantId={selectedTenantId}
+          targetTable={targetTable}
+          onTargetTableChange={(v) => {
+            setTargetTable(v)
+            setTargetTableDirty(true)
+          }}
         />
       )}
     </div>
@@ -241,6 +288,9 @@ function TemplateContent({
   saved,
   onApprove,
   onGoExport,
+  tenantId,
+  targetTable,
+  onTargetTableChange,
 }: {
   proposal: TemplateProposal
   connectorName: string | null
@@ -251,6 +301,9 @@ function TemplateContent({
   saved: boolean
   onApprove: () => void
   onGoExport: () => void
+  tenantId: string
+  targetTable: string
+  onTargetTableChange: (v: string) => void
 }) {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6">
@@ -261,7 +314,8 @@ function TemplateContent({
           <MetaRow label="Connector" value={connectorName ?? "—"} />
           <MetaRow label="Selected fields" value={String(columnsCount)} />
           {reportingLevel ? <MetaRow label="Reporting scope" value={reportingLevel} /> : null}
-          <SuggestedTableRow name={proposal.tableName} />
+          <MetaRow label="Active client (tenant)" value={tenantId} />
+          <TargetTableRow value={targetTable} onChange={onTargetTableChange} disabled={saved} />
         </div>
 
         <div className="bg-card rounded-2xl border border-border p-5">
@@ -313,11 +367,35 @@ function TemplateContent({
   )
 }
 
-function SuggestedTableRow({ name }: { name: string }) {
+function TargetTableRow({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string
+  onChange: (v: string) => void
+  disabled: boolean
+}) {
   return (
-    <div>
-      <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-1">Suggested table</p>
-      <code className="text-xs font-mono text-primary">{name}</code>
+    <div className="space-y-1.5">
+      <Label
+        htmlFor="target-table-input"
+        className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider"
+      >
+        Target BigQuery table
+      </Label>
+      <Input
+        id="target-table-input"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        className="font-mono text-xs text-primary"
+        placeholder="bronze.meta_facebook_ad_insights_acme"
+      />
+      <p className="text-[11px] text-on-surface-variant">
+        Auto-built from the manifest pattern and your active client. Edit it to override
+        the destination for this template only.
+      </p>
     </div>
   )
 }

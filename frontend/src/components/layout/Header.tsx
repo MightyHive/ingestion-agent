@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation"
 import { UserMenu } from "@/components/auth/UserMenu"
 import { cn } from "@/lib/utils"
 import { ProjectsMenu } from "@/components/auth/ProjectsMenu"
+import TenantSelector from "@/components/layout/TenantSelector"
 
 const headerNavClass =
   "text-slate-500 hover:text-slate-700 transition-colors py-1 text-sm font-medium"
@@ -34,6 +35,7 @@ export default function Header() {
       </div>
 
       <div className="flex items-center gap-2">
+        <TenantSelector />
         <button type="button" className="rounded-lg p-2 transition-colors hover:bg-slate-50">
           <span className="material-symbols-outlined text-slate-500">help</span>
         </button>

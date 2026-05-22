@@ -14,11 +14,28 @@ export async function fetchManifest(id: string) {
   return res.json()
 }
 
-export async function runIngestion(manifestId: string, params: Record<string, unknown>) {
+/**
+ * Calls `POST /api/run`.
+ *
+ * `tenantId` is optional. When omitted (or empty/whitespace) the backend falls back
+ * to its `MDS_DEFAULT_TENANT_ID` (`"dev"`). When provided it controls:
+ *   - which entry of `~/.mds/tenants.json` is loaded (GCP project, service account, context)
+ *   - the `{tenant_id}` token substituted into the manifest's `bronze_pattern`
+ *     (e.g. `bronze.meta_facebook_ad_insights_cliente1`)
+ */
+export async function runIngestion(
+  manifestId: string,
+  params: Record<string, unknown>,
+  tenantId?: string | null
+) {
+  const trimmedTenant = tenantId?.trim() ? tenantId.trim() : undefined
+  const requestBody: Record<string, unknown> = { manifest_id: manifestId, params }
+  if (trimmedTenant) requestBody.tenant_id = trimmedTenant
+
   const res = await fetch(`${API_BASE}/api/run`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ manifest_id: manifestId, params }),
+    body: JSON.stringify(requestBody),
   })
   const body: Record<string, unknown> = await res.json()
   const headerRequestId = res.headers.get("X-Request-Id")

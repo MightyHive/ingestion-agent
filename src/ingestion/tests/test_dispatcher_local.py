@@ -66,7 +66,23 @@ def test_local_backend_function_not_found() -> None:
         backend.invoke(manifest, {"fields": []}, _tenant())
 
 
-def test_dispatcher_enforces_required_context_keys() -> None:
+def test_local_backend_enforces_required_context_keys_directly() -> None:
+    """LocalBackend itself enforces auth.context_required (Phase 5
+    refactor moved the check here from ConnectorDispatcher so the
+    HTTPBackend path can skip it cleanly — see ``base.py`` docstring)."""
+    backend = LocalBackend()
+    bare_tenant = TenantContext(
+        tenant_id="dev", gcp_project="p", service_account="s", context={}
+    )
+    with pytest.raises(MissingContextKeyError):
+        backend.invoke(_load_manifest(), {"fields": []}, bare_tenant)
+
+
+def test_dispatcher_with_local_runtime_propagates_context_check() -> None:
+    """End-to-end via the dispatcher: with runtime=local, the missing
+    context still raises ``MissingContextKeyError`` because LocalBackend
+    enforces it internally. This is the regression test for callers that
+    used to rely on the dispatcher-level check."""
     disp = ConnectorDispatcher(runtime="local")
     manifest = _load_manifest()
     bare_tenant = TenantContext(
@@ -81,6 +97,11 @@ def test_dispatcher_unknown_runtime() -> None:
         ConnectorDispatcher(runtime="zarko").backend  # accessing builds it
 
 
-def test_dispatcher_http_runtime_phase5_message() -> None:
-    with pytest.raises(BackendError, match="Phase 5"):
-        ConnectorDispatcher(runtime="http").backend
+def test_dispatcher_http_runtime_builds_http_backend() -> None:
+    # Phase 5: HTTPBackend is wired. The dedicated test suite for the
+    # HTTP path lives in test_dispatcher_http.py; here we only assert
+    # that the runtime selector no longer raises the Phase-5-pending
+    # placeholder error.
+    from ingestion.dispatcher.http import HTTPBackend
+
+    assert isinstance(ConnectorDispatcher(runtime="http").backend, HTTPBackend)

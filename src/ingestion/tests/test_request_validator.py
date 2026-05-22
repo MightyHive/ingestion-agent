@@ -83,6 +83,45 @@ def test_validate_err_unknown_param(catalog: Catalog) -> None:
     assert any("unknown keys" in e for e in lol.errors)
 
 
+def test_validate_accepts_system_param_target_table(catalog: Catalog) -> None:
+    """``target_table`` is a Phase 5 reserved system key — it is
+    populated by the frontend (override of the bronze_pattern
+    substitution) and must NOT be flagged as an unknown manifest
+    param. This regression-pins the allow-list in
+    ``_SYSTEM_PARAM_KEYS``.
+    """
+    lol = validate_request(
+        manifest_id="test_mock_connector",
+        params={"fields": [], "target_table": "sandbox.adhoc_run"},
+        tenant_id="dev-tenant",
+        catalog=catalog,
+    )
+    assert lol.status == "OK", f"errors: {lol.errors}"
+
+
+def test_validate_still_rejects_unknown_alongside_system_param(
+    catalog: Catalog,
+) -> None:
+    """The system-key allow-list does NOT relax the rest of the
+    strictness contract: any non-system, non-declared key still
+    yields an ERR. Mixing a valid system key with a typo must not
+    mask the typo.
+    """
+    lol = validate_request(
+        manifest_id="test_mock_connector",
+        params={
+            "fields": [],
+            "target_table": "sandbox.adhoc_run",  # allowed
+            "totally_unknown": 1,                 # still rejected
+        },
+        tenant_id="dev-tenant",
+        catalog=catalog,
+    )
+    assert lol.status == "ERR"
+    assert any("unknown keys" in e for e in lol.errors)
+    assert any("totally_unknown" in e for e in lol.errors)
+
+
 def test_validate_err_field_not_in_available_fields(catalog: Catalog) -> None:
     lol = validate_request(
         manifest_id="test_mock_connector",

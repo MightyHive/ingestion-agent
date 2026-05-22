@@ -163,6 +163,12 @@ def node(state: dict[str, Any]) -> dict[str, Any]:
         }
 
     params = state.get("normalised_params") or {}
+    # target_table is resolved by data_architect and stored separately in
+    # state; inject it into params so HTTPBackend forwards it to the CF
+    # (which only writes to BQ when target_table is present in the payload).
+    target_table = state.get("target_table")
+    if target_table and "target_table" not in params:
+        params = {**params, "target_table": target_table}
     tenant_id = state.get("tenant_id", "")
     lol = run(manifest, params, tenant_id)
 

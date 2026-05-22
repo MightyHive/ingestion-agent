@@ -1,0 +1,152 @@
+{
+  "id": "dv360_reports",
+  "name": "DV360 — Bid Manager Reports",
+  "platform": "dv360",
+  "connector": "reports",
+  "version": "0.1.0",
+  "status": "alpha",
+  "description": "Display & Video 360 Bid Manager Reporting API (v2) connector. Runs a pre-existing DV360 query identified by `context.query_id`, polls until DONE, downloads the resulting CSV from the signed Google Cloud Storage URL the API returns, and parses the rows. Headers are normalised by the connector (spaces/colons/parens/slashes/dashes/dots → underscores, repeated underscores collapsed). Numeric-looking values are cast to int/float; date columns remain STRING because DV360 emits them as 'YYYY/MM/DD' — promoting them to DATE is post-MVP. The catalog of fields below is a representative superset of the most common dimensions and metrics across DV360 queries; the connector intersects them with whatever columns the query actually returns (see _filter_fields).",
+  "owner": "Ivan Krawchik",
+  "endpoint": {
+    "module_path": "dv360.reports.dv360_reports",
+    "function_name": "fetch",
+    "cloud_function_name": "dv360-fetch",
+    "cloud_function_region": "us-central1"
+  },
+  "auth": {
+    "context_required": ["query_id", "service_account_json"],
+    "secrets": [
+      {
+        "context_key": "query_id",
+        "secret_id": "client_<client_id>_dv360_query_id",
+        "version": "latest"
+      },
+      {
+        "context_key": "service_account_json",
+        "secret_id": "client_<client_id>_dv360_service_account_json",
+        "version": "latest"
+      }
+    ],
+    "scopes": ["https://www.googleapis.com/auth/doubleclickbidmanager"]
+  },
+  "params": {
+    "required": [
+      {
+        "name": "fields",
+        "type": "field_list",
+        "description": "List of available_fields names to retrieve. The connector intersects this list with the actual columns produced by the DV360 query; non-matching names are dropped with a warning."
+      },
+      {
+        "name": "data_range",
+        "type": "string",
+        "description": "DV360 dataRange enum that controls the time window for the report run. Use CUSTOM_DATES together with customStartDate + customEndDate for an explicit window.",
+        "enum": [
+          "CUSTOM_DATES",
+          "CURRENT_DAY",
+          "PREVIOUS_DAY",
+          "WEEK_TO_DATE",
+          "MONTH_TO_DATE",
+          "QUARTER_TO_DATE",
+          "YEAR_TO_DATE",
+          "PREVIOUS_WEEK",
+          "PREVIOUS_MONTH",
+          "PREVIOUS_QUARTER",
+          "PREVIOUS_YEAR",
+          "LAST_7_DAYS",
+          "LAST_14_DAYS",
+          "LAST_30_DAYS",
+          "LAST_60_DAYS",
+          "LAST_90_DAYS",
+          "LAST_365_DAYS",
+          "ALL_TIME"
+        ]
+      }
+    ],
+    "optional": [
+      {
+        "name": "customStartDate",
+        "type": "string",
+        "pattern": "^[0-9]{8}$",
+        "description": "Inclusive lower bound of the report window in YYYYMMDD format. Required when data_range = CUSTOM_DATES, ignored otherwise."
+      },
+      {
+        "name": "customEndDate",
+        "type": "string",
+        "pattern": "^[0-9]{8}$",
+        "description": "Inclusive upper bound of the report window in YYYYMMDD format. Required when data_range = CUSTOM_DATES, ignored otherwise."
+      },
+      {
+        "name": "poll_timeout_sec",
+        "type": "integer",
+        "default": 400,
+        "minimum": 30,
+        "maximum": 3600,
+        "description": "Maximum seconds to wait for the DV360 report to reach DONE state. The connector raises POLL_TIMEOUT if the report is still RUNNING after this many seconds."
+      },
+      {
+        "name": "poll_interval_sec",
+        "type": "integer",
+        "default": 10,
+        "minimum": 1,
+        "maximum": 60,
+        "description": "Seconds between report state polls."
+      }
+    ]
+  },
+  "available_fields": [
+    {"name": "Advertiser",                            "type": "STRING",  "description": "Advertiser display name."},
+    {"name": "Advertiser_ID",                         "type": "STRING",  "description": "DV360 advertiser id (stringified to preserve leading zeros)."},
+    {"name": "Advertiser_Currency",                   "type": "STRING",  "description": "ISO 4217 currency code reported for advertiser-currency metrics."},
+    {"name": "Insertion_Order",                       "type": "STRING"},
+    {"name": "Insertion_Order_ID",                    "type": "STRING"},
+    {"name": "Line_Item",                             "type": "STRING"},
+    {"name": "Line_Item_ID",                          "type": "STRING"},
+    {"name": "Campaign",                              "type": "STRING"},
+    {"name": "Campaign_ID",                           "type": "STRING"},
+    {"name": "Creative",                              "type": "STRING"},
+    {"name": "Creative_ID",                           "type": "STRING"},
+    {"name": "Creative_Type",                         "type": "STRING",  "description": "DV360 creative type (e.g. Display, Video, Audio, Native)."},
+    {"name": "Date",                                  "type": "STRING",  "description": "Report date as emitted by DV360 ('YYYY/MM/DD'). Kept as STRING for the MVP; cast to DATE in a post-MVP transform."},
+    {"name": "Week",                                  "type": "STRING"},
+    {"name": "Month",                                 "type": "STRING"},
+    {"name": "Country",                               "type": "STRING"},
+    {"name": "Country_Code",                          "type": "STRING",  "description": "ISO 3166-1 alpha-2 country code."},
+    {"name": "Device_Type",                           "type": "STRING",  "description": "Connected device class (Desktop, Smart Phone, Tablet, Connected TV, etc.)."},
+    {"name": "Browser",                               "type": "STRING"},
+    {"name": "Exchange",                              "type": "STRING",  "description": "Ad exchange name."},
+    {"name": "Impressions",                           "type": "INT64",   "description": "Cast from CSV string to int by the connector."},
+    {"name": "Clicks",                                "type": "INT64"},
+    {"name": "CTR",                                   "type": "FLOAT64", "description": "Click-through rate. DV360 may emit as percentage or ratio depending on the query — preserved verbatim."},
+    {"name": "Total_Conversions",                     "type": "FLOAT64"},
+    {"name": "Post_Click_Conversions",                "type": "FLOAT64"},
+    {"name": "Post_View_Conversions",                 "type": "FLOAT64"},
+    {"name": "Revenue_Adv_Currency",                  "type": "NUMERIC", "description": "Revenue in advertiser currency."},
+    {"name": "Media_Cost_Adv_Currency",               "type": "NUMERIC", "description": "Media cost in advertiser currency."},
+    {"name": "Total_Media_Cost_Adv_Currency",        "type": "NUMERIC", "description": "Total media cost (media + fees + data) in advertiser currency."},
+    {"name": "CPM_Adv_Currency",                      "type": "FLOAT64"},
+    {"name": "CPC_Adv_Currency",                      "type": "FLOAT64"},
+    {"name": "Video_Starts",                          "type": "INT64"},
+    {"name": "Video_First_Quartile_Completions",      "type": "INT64"},
+    {"name": "Video_Midpoint_Completions",            "type": "INT64"},
+    {"name": "Video_Third_Quartile_Completions",      "type": "INT64"},
+    {"name": "Video_Completions",                     "type": "INT64"},
+    {"name": "Active_View_Eligible_Impressions",      "type": "INT64",   "description": "Impressions eligible to be measured by Active View."},
+    {"name": "Active_View_Measurable_Impressions",    "type": "INT64"},
+    {"name": "Active_View_Viewable_Impressions",      "type": "INT64",   "description": "Active View viewable impressions per MRC definition."}
+  ],
+  "table_naming": {
+    "bronze_pattern": "bronze.dv360_reports"
+  },
+  "limits": {
+    "max_records_per_call": 500000,
+    "max_call_duration_seconds": 540,
+    "rate_limit_qps": 1
+  },
+  "metadata": {
+    "api_reference": "https://developers.google.com/bid-manager/reference/rest",
+    "api_version": "v2",
+    "base_url": "https://doubleclickbidmanager.googleapis.com/v2",
+    "response_subkey": "records",
+    "notes": "DV360 query (context.query_id) must be created in DV360 ahead of time. The connector triggers queries/{id}:run, polls queries/{id}/reports/{report_id} until DONE, downloads the signed GCS URL from metadata.googleCloudStoragePath, and parses the CSV. Service account in client_<id>_dv360_service_account_json must have access to the DV360 partner/advertiser the query targets."
+  }
+}

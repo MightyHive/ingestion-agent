@@ -119,10 +119,15 @@ def test_to_ddl_real_facebook_manifest() -> None:
         pytest.skip("connectors-library submodule not initialised")
     with facebook.open("r", encoding="utf-8") as fh:
         manifest = json.load(fh)
+    # Phase 5: the Meta manifest now uses the {tenant_id} token in
+    # bronze_pattern, so we need to pass an explicit tenant_id to get a
+    # deterministic table name in the test.
     ddl, table, columns = to_ddl(
-        manifest, ["account_id", "campaign_name", "spend"]
+        manifest,
+        ["account_id", "campaign_name", "spend"],
+        tenant_id="cliente1",
     )
-    assert table == "bronze.meta_facebook_ad_insights"
+    assert table == "bronze.meta_facebook_ad_insights_cliente1"
     # Partition + cluster must be honoured.
     assert "PARTITION BY date_start" in ddl
     assert "CLUSTER BY account_id, campaign_id" in ddl
@@ -131,3 +136,67 @@ def test_to_ddl_real_facebook_manifest() -> None:
     assert "date_start" in names and "date_stop" in names
     # Selected fields must show up.
     assert "spend NUMERIC" in ddl
+
+
+def test_resolve_table_name_substitutes_tenant_id_token() -> None:
+    """The {tenant_id} token must substitute the supplied tenant key.
+
+    This is what gives Phase 5 multi-tenant tables their suffix.
+    """
+    from ingestion.nodes.data_architect import _resolve_table_name
+
+    manifest = _load_mock()
+    manifest["table_naming"]["bronze_pattern"] = "bronze.{id}_{tenant_id}"
+    assert (
+        _resolve_table_name(manifest, tenant_id="cliente1")
+        == "bronze.test_mock_connector_cliente1"
+    )
+
+
+def test_resolve_table_name_sanitises_tenant_id() -> None:
+    """tenant_id keys may legitimately contain dashes/uppercase in the
+    operator-facing tenants.json, but BigQuery only accepts
+    ``[A-Za-z0-9_]`` in identifiers. The substitution must lowercase
+    and replace dashes/spaces with underscores to keep the resulting
+    table name valid.
+    """
+    from ingestion.nodes.data_architect import _resolve_table_name
+
+    manifest = _load_mock()
+    manifest["table_naming"]["bronze_pattern"] = "bronze.{id}_{tenant_id}"
+    assert (
+        _resolve_table_name(manifest, tenant_id="Acme-Brand 01")
+        == "bronze.test_mock_connector_acme_brand_01"
+    )
+
+
+def test_resolve_table_name_ignores_tenant_id_when_token_absent() -> None:
+    """If the manifest's bronze_pattern doesn't reference {tenant_id},
+    the parameter is silently ignored. Existing single-tenant manifests
+    keep their behaviour unchanged.
+    """
+    from ingestion.nodes.data_architect import _resolve_table_name
+
+    manifest = _load_mock()
+    manifest["table_naming"]["bronze_pattern"] = "bronze.{id}"
+    assert (
+        _resolve_table_name(manifest, tenant_id="cliente1")
+        == "bronze.test_mock_connector"
+    )
+
+
+def test_to_ddl_user_target_table_wins_over_manifest() -> None:
+    """``params.target_table`` (via the ``table_target`` arg) must win
+    over the manifest substitution. The frontend exposes this so the
+    user can override the default destination (e.g. to land in a
+    sandbox dataset for a one-off backfill).
+    """
+    manifest = _load_mock()
+    manifest["table_naming"]["bronze_pattern"] = "bronze.{id}_{tenant_id}"
+    _ddl, table, _cols = to_ddl(
+        manifest,
+        ["id"],
+        table_target="sandbox.adhoc_run",
+        tenant_id="cliente1",
+    )
+    assert table == "sandbox.adhoc_run"

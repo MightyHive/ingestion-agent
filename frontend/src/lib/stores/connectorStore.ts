@@ -6,6 +6,7 @@ import { columnsFromUiTriggerData } from "@/lib/ui-trigger-fields"
 import { generateMockTemplate, mockAgentStream, mockSubmitInputStream } from "@/lib/mock-agent"
 import { buildTemplateProposalFromSelection } from "@/lib/template-proposal"
 import { getConnectorSessionId } from "@/lib/sessions"
+import { getActiveTenantId } from "@/lib/stores/tenantStore"
 
 const IS_MOCK = process.env.NEXT_PUBLIC_MOCK === "true"
 /** Legacy SSE paths only (`/api/chat`, `/api/submit_input`). Catalog + run use `@/lib/api/catalog`. */
@@ -433,6 +434,7 @@ export const useConnectorStore = create<ConnectorStore>()((set, get) => ({
             fields,
             manifest,
             reportingLevel,
+            tenantId: getActiveTenantId(),
           })
       set({
         templateProposal: {
@@ -464,7 +466,12 @@ export const useConnectorStore = create<ConnectorStore>()((set, get) => ({
         const manifest = get().manifest
         const defaults = manifest ? buildDefaultRunParams(manifest) : {}
         const mergedParams = { ...defaults, ...params }
-        const body = await runIngestion(connectorId, { fields: selectedFields, ...mergedParams })
+        const tenantId = getActiveTenantId()
+        const body = await runIngestion(
+          connectorId,
+          { fields: selectedFields, ...mergedParams },
+          tenantId
+        )
         const requestId = (body.requestId as string | null) ?? null
         const result: RunResult = {
           manifest_id: String(body.manifest_id ?? connectorId),

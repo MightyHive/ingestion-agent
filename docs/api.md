@@ -9,6 +9,24 @@
 
 ---
 
+## Índice
+
+1. [Cómo correrlo en local](#1-cómo-correrlo-en-local)
+2. [Mapa rápido de endpoints](#2-mapa-rápido-de-endpoints)
+3. [Endpoints estables](#3-endpoints-estables)
+   - 3.1 [`GET /api/catalog`](#31-get-apicatalog) — listing del catálogo (cards del picker)
+   - 3.2 [`GET /api/catalog/{id}`](#32-get-apicatalogid) — manifest completo (ColumnSelector + form de params)
+   - 3.3 [`POST /api/run`](#33-post-apirun) — ejecución sync del pipeline de ingesta
+   - 3.4 [Mapping de tipos: BigQuery → frontend `FieldType`](#34-mapping-de-tipos-bigquery--frontend-fieldtype)
+4. [Endpoints eliminados en Fase 4](#4-endpoints-eliminados-en-fase-4) — qué reemplaza a cada uno
+5. [Roadmap por fase](#5-roadmap-por-fase) — qué cambia (o no) en la API en las próximas fases
+6. [Glosario rápido](#6-glosario-rápido)
+7. [Changelog](#7-changelog)
+
+> **¿Necesitás un endpoint nuevo o un cambio en uno existente?** Decime (Ivan) por Slack o abrime un issue en `ingestion-agent` con el caso de uso (qué pantalla / qué flujo del frontend lo necesita y qué body/response esperás). Me alineo con Facundo y lo metemos en la fase que corresponda. Cambios chicos compatibles los hago en una iteración; breaking changes van bumpeando `version` del response y los anuncio en este doc + Slack antes de mergear.
+
+---
+
 ## 1. Cómo correrlo en local
 
 El backend es FastAPI y se levanta desde `src/`:
@@ -231,7 +249,7 @@ Body con el shape de `formatted_response` que produce el nodo `format_response`:
 | Campo         | Tipo                       | Notas |
 |---------------|----------------------------|-------|
 | `manifest_id` | `string`                   | Eco del request. |
-| `tenant_id`   | `string`                   | Tenant resuelto. Hoy está hardcodeado a `"dev"` en el handler (`_DEFAULT_TENANT_ID` en `src/api.py`). En Fase 5 viene del header `X-Tenant-Id` + resolver con Secret Manager + SA impersonation. |
+| `tenant_id`   | `string`                   | Tenant resuelto. Hoy está hardcodeado a `"dev"` en el handler (`_DEFAULT_TENANT_ID` en `src/api.py`). En Fase 5 va a venir del header `X-Tenant-Id` (el frontend agrega un dropdown de clientes) y se resuelve contra Secret Manager. |
 | `target_table`| `string`                   | Tabla destino en BigQuery, con tokens del `bronze_pattern` ya sustituidos. **MVP**: no se ejecuta el insert aún — eso queda para Fase 5. |
 | `ddl`         | `string`                   | DDL `CREATE TABLE` determinístico generado por `Manifest.to_ddl()`. Mismo contrato que ya usabas en `SchemaApproval.ddl`. |
 | `columns`     | `string[]`                 | Subset solicitado (o todos los selectables si pasaste `fields: []`). |
@@ -313,7 +331,7 @@ Si te encontrás con un caso que dependía del comportamiento SSE / `ui_trigger`
 | **2** ✅ | Nodos determinísticos + grafo nuevo en paralelo | Sin cambios públicos en la API todavía. El nuevo grafo se prueba con `LocalBackend` adentro. |
 | **3** ✅ | Entrypoint determinístico | **Nuevo:** `POST /api/run` (sync JSON). **Deprecated** (con headers RFC 8594): `/api/chat`, `/api/submit_input`, `/api/templates`, `/api/sessions/{id}/history`. Los deprecated seguían funcionando hasta Fase 4. tenant_id hardcodeado a `"dev"`; se reemplaza por header `X-Tenant-Id` en Fase 5. |
 | **4** ✅ | Borrado del legacy | Se borraron `/api/chat`, `/api/submit_input`, `/api/templates`, `/api/sessions/{id}/history` del backend + el código de los agentes LLM (`src/agents/`, `src/main.py`, `src/services/`, etc.), el checkpointer `AsyncSqliteSaver`, y todas las dependencias del stack LLM en `requirements.txt`. **Único endpoint POST de ingesta a partir de acá: `/api/run`.** |
-| **5** | HTTPBackend + Cloud Functions en producción | Sin cambios en la API frontend-facing. Cambios internos: el dispatcher empieza a invocar Cloud Functions del cliente con SA impersonation. Para el frontend es transparente. |
+| **5** | HTTPBackend + Cloud Function (DV360) en producción, single-project | **Pequeño cambio frontend-facing:** nuevo header `X-Tenant-Id` obligatorio en `/api/run` (Mili agrega un dropdown de clientes y lo manda en cada request). Internamente el dispatcher pasa a invocar una Cloud Function deployada en el GCP propio de mds; la CF lee credenciales de Secret Manager y escribe los records directamente a BigQuery (el backend ya no recibe la data completa, solo preview + row_count). |
 | **6** | Resto de conectores (IG, Google Ads, DV360) | El catálogo crece automáticamente — vas a ver más entries en `/api/catalog`. Sin cambios estructurales. |
 | **7** | Limpieza final | Doc final del flujo "agregar conector nuevo" en `connectors-library/CONTRIBUTING.md`. |
 
@@ -325,14 +343,33 @@ Cuando algo de esto cambie, edito este doc + te aviso.
 
 - **Manifest:** `manifest.json` por conector dentro de `connectors-library/`. Single source of truth: el frontend lo consume para el catálogo, el backend para validar params, generar DDL y dispatchear al runtime correcto. Definido por `src/ingestion/manifest/schema.json` (Draft 2020-12).
 - **Catálogo:** colección en memoria de manifests escaneados al levantar el server. Cache lazy; se invalida con un restart del backend (no hay hot-reload por ahora).
-- **`LocalBackend` / `HTTPBackend`:** estrategias del dispatcher para ejecutar un conector. Local importa el módulo Python del submodule (dev). HTTP firma id_tokens y POSTea a una Cloud Function (prod). El frontend no necesita saber cuál corre, lo decide la env `MDS_RUNTIME=local|http`.
+- **`LocalBackend` / `HTTPBackend`:** estrategias del dispatcher para ejecutar un conector. Local importa el módulo Python del submodule (dev). HTTP firma id_tokens vía ADC y POSTea a una Cloud Function (prod). El frontend no necesita saber cuál corre, lo decide la env `MDS_RUNTIME=local|http|auto`.
+- **`AutoBackend`:** elige por manifest. Si el manifest tiene `endpoint.cloud_function_name`, ruta a HTTP; si no, cae a Local. Es el modo recomendado durante la migración Fase 5 — flipá conectores uno por uno agregando el campo, sin tocar env entre deploys.
 - **Tenant:** cliente con su propio proyecto GCP. Cada tenant tiene su Secret Manager y su Service Account. El backend impersona el SA del tenant para ejecutar conectores en su proyecto, sin exponer credenciales en payload.
 - **Bronze:** capa raw en BigQuery donde escribimos los records crudos del conector. Definida por `manifest.table_naming`.
 
 ---
 
+## 6.1 Variables de entorno relevantes
+
+| Variable | Valores | Default | Para qué sirve |
+|---|---|---|---|
+| `MDS_RUNTIME` | `local` \| `http` \| `auto` | `local` | Selecciona el backend del dispatcher. `auto` decide por manifest (HTTP si declara `cloud_function_name`, Local en caso contrario). |
+| `MDS_CF_BASE_URL` | URL absoluta (sin trailing slash) | unset | Override del host de Cloud Functions. Si está seteado, `HTTPBackend` arma la URL como `{MDS_CF_BASE_URL}/{cloud_function_name}` y **salta el id_token** cuando apunta a loopback (`localhost`, `127.0.0.1`). Útil para el emulador `functions-framework` y smoke tests sin ADC. Si está vacío, se usa la forma canónica `https://{region}-{tenant.gcp_project}.cloudfunctions.net/{name}`. |
+| `MDS_LOCAL_BACKEND_PATHS` | paths colon-separados | unset | Roots extra para que `LocalBackend` resuelva conectores de fixtures (tests, CI ad-hoc). |
+
+Notas de seguridad para `HTTPBackend`:
+
+- El payload que viaja al CF es **siempre** `{tenant_id, manifest_id, manifest_version, fields?, target_table?, params}`. Nunca incluye credenciales: hay un scrubber recursivo que descarta cualquier clave con substring `secret`, `token`, `password`, `credential`, `service_account`, `private_key`, `refresh`, `api_key`, etc. (case-insensitive) como defensa en profundidad, además del contrato de que `params` viene del request body del usuario.
+- El CF resuelve por sí mismo los secretos del tenant desde Secret Manager con su propia identidad de SA. El backend no necesita leer ni reenviar nada.
+- Timeout cliente: `manifest.limits.max_call_duration_seconds + 20s` de buffer, o `560s` por default. Sirve para que el timeout del CF dispare antes que el del cliente y recibamos un error estructurado en vez de un abort de httpx.
+
+---
+
 ## 7. Changelog
 
+- **2026-05-19 (Fase 5 / B3 ✅)** — `HTTPBackend` aterrizó (`src/ingestion/dispatcher/http.py`). `MDS_RUNTIME=http` ya no levanta `BackendError`; ahora instancia el backend HTTP. Se agregó `MDS_RUNTIME=auto` (router per-manifest, ver §6) y la variable `MDS_CF_BASE_URL` para apuntar el emulador local o staging. Payload garantiza no leak de credenciales (scrubber + test de regresión). Mapping de errores: `connector_auth_required` (401), `connector_forbidden` (403), `connector_not_found` (404), `connector_timeout` (408/504/`httpx.TimeoutException`), `connector_unreachable` (`httpx.ConnectError`), `connector_upstream_error` (5xx), `connector_invalid_response` (body no-JSON). Nueva dep: `google-auth>=2.30`. El catálogo público no cambia.
+- **2026-05-19 (Fase 5 / B1 ✅)** — Manifest de DV360 (`connectors-library/dv360/manifest.json`) agregado al catálogo. 39 fields disponibles (21 dimensiones + 18 métricas), naming alineado a `_normalize_header` del conector. Auth via Service Account (`service_account_json` + `query_id` en context). `endpoint.cloud_function_name = "dv360-fetch"` lista para que `AutoBackend` la rutee a HTTP cuando MDS arranque con `MDS_RUNTIME=auto`.
 - **2026-05-11 (Fase 4 ✅)** — **Breaking:** se borraron del backend los handlers de `/api/chat`, `/api/submit_input`, `/api/templates` y `/api/sessions/{session_id}/history` (devuelven `404` desde hoy). Se eliminó todo el código del grafo multi-agente: `src/agents/`, `src/main.py`, `src/services/`, el checkpointer `AsyncSqliteSaver` y el `lifespan` que lo cargaba. `requirements.txt` quedó reducido al stack determinístico (FastAPI + uvicorn + langgraph + pydantic + jsonschema + pytest + httpx). `src/api.py` bumpeado a `2.0.0`. Se agregaron 4 tests parametrizados que verifican el `404` de los endpoints viejos para que cualquier regresión sea cazada por CI. Tag `legacy-mds-agents` apunta al commit pre-Fase 4 por si hay que volver a mirar la implementación histórica.
 - **2026-05-11 (Fase 3 ✅)** — Nuevo endpoint estable `POST /api/run` (sync JSON, sin SSE, sin estado de sesión). Marcamos `/api/chat`, `/api/submit_input`, `/api/templates` y `/api/sessions/{id}/history` como **deprecated** con headers RFC 8594 (`Deprecation`, `Sunset: Phase 4`, `Link` al sucesor). Los deprecated siguieron funcionando hasta el borrado en Fase 4. Se descartó el flag `MDS_USE_LEGACY_GRAPH` previsto en la doc anterior — separamos por endpoint, no por flag, para hacer el borrado de Fase 4 más limpio.
 - **2026-05-08** — Doc inicial. Endpoints estables: `/api/catalog`, `/api/catalog/{id}` (Fase 1). Documentados también los endpoints legacy del grafo viejo. Mapping BigQuery → `FieldType` propuesto.

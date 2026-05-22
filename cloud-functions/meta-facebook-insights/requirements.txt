@@ -1,0 +1,25 @@
+# Cloud Function runtime dependencies for meta-facebook-insights.
+#
+# Pinned to compatible minor ranges (NOT exact pins) so:
+#   * Security backports land automatically on redeploy.
+#   * Cold-start time stays low (no resolver thrashing).
+#
+# Updates require redeploy + smoke test against a real Meta access token.
+
+# HTTP entrypoint shim (Gen2 runtime supplies this, but listing it
+# explicitly keeps the local functions-framework smoke deterministic).
+functions-framework==3.*
+
+# Secret Manager client — reads:
+#   client_<tenant>_meta_access_token
+#   client_<tenant>_meta_ad_account_id
+google-cloud-secret-manager>=2.20,<3
+
+# BigQuery client — used to create bronze table on first write + append rows
+google-cloud-bigquery>=3.20,<4
+
+# Vendored connector dependency (also listed in
+# connectors-library/meta/facebook/requirements.txt). Meta connector
+# calls the Graph API over plain HTTP — no google-auth needed since
+# auth is a System User access_token, not a service-account JSON.
+requests>=2.31.0

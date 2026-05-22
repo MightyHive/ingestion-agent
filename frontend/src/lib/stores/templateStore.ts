@@ -12,6 +12,13 @@ export interface SavedTemplate {
   columns: TemplateColumn[]
   ddl: string
   savedAt: string
+  /**
+   * Optional override for the fully-qualified BigQuery target table
+   * (e.g. `"bronze.meta_facebook_ad_insights_acme"`). When set it is forwarded
+   * to the backend as `params.target_table` and bypasses the manifest's
+   * `bronze_pattern` substitution entirely.
+   */
+  targetTableOverride?: string
 }
 
 interface TemplateStore {
