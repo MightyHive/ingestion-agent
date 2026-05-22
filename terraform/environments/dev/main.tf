@@ -10,7 +10,7 @@ terraform {
 
   backend "gcs" {
     bucket = "monks-mds-tfstate"
-    prefix = "terraform/state/dev"
+    prefix = "terraform/state"
   }
 }
 
