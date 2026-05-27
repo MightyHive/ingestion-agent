@@ -35,13 +35,13 @@ export default function Header() {
       </div>
 
       <div className="flex items-center gap-2">
-        <TenantSelector />
         <button type="button" className="rounded-lg p-2 transition-colors hover:bg-slate-50">
           <span className="material-symbols-outlined text-slate-500">help</span>
         </button>
         <button type="button" className="rounded-lg p-2 transition-colors hover:bg-slate-50">
           <span className="material-symbols-outlined text-slate-500">notifications</span>
         </button>
+        <TenantSelector />
         <ProjectsMenu />
         <UserMenu />
       </div>

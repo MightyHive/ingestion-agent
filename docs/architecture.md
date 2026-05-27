@@ -1,14 +1,14 @@
-# MDS (Media Data Studio) — Arquitectura objetivo
+# MDS (Media Data Studio) — Architecture
 
-> Documento técnico para el equipo. Acompaña a [ADR-001](adr/001-multi-agent-to-deterministic-pipeline.md) y a [migration-plan.md](migration-plan.md).
+> Technical reference for the MDS codebase. Companion: [ADR-001](adr/001-multi-agent-to-deterministic-pipeline.md) (multi-agent → deterministic decision). For day-to-day procedures see [`fase5-runbook.md`](fase5-runbook.md); for API contracts [`api.md`](api.md); for first-time setup [`onboarding-local.md`](onboarding-local.md).
 
-## 0. Equipo y ownership
+## 0. Team and ownership
 
-| Área | Owner | Notas |
+| Area | Owner | Notes |
 |------|-------|-------|
-| Backend, arquitectura, API, decisiones de proyecto | Ivan | Lidera el refactor que describe este doc. |
-| Frontend (`frontend/`, Next.js) | Mili | **No tocar.** Coordinación necesaria sobre el contrato de `/api/catalog` y cualquier endpoint nuevo de ingesta. |
-| SE-agent / artifact store / staging area | Facundo (legacy) | El trabajo de Facundo en el backend pre-2026-05 queda preservado en `legacy-mds-agents`. Ver §11 sobre coordinación. |
+| Backend, architecture, API, project decisions, credentials CRUD | Ivan | |
+| Frontend (`frontend/`, Next.js) | Mili | Coordinate changes via PR; the Fase 5 patches (tenant selector, target table, credentials UI) were the agreed exception while wiring the new contracts. |
+| Credentials lifecycle (Secret Manager bootstrap, rotation, UI extensions) | Facundo | Owner of long-term operations on `src/credentials/` and the related UI affordances. |
 
 ---
 
@@ -64,46 +64,52 @@
 ```
 mds/
 ├── README.md
+├── .env.example                   ← template for backend env vars
+├── config/
+│   └── tenants.json.example       ← shape for ~/.mds/tenants.json (gitignored)
 ├── docs/
-│   ├── adr/
-│   │   └── 001-multi-agent-to-deterministic-pipeline.md
-│   ├── architecture.md            ← este doc
-│   └── migration-plan.md
-├── frontend/                      ← Next.js (sin cambios estructurales)
+│   ├── adr/001-multi-agent-to-deterministic-pipeline.md
+│   ├── architecture.md            ← this doc
+│   ├── api.md                     ← endpoint contracts
+│   ├── onboarding-local.md        ← run MDS on a Mac
+│   └── fase5-runbook.md           ← deploys, smoke tests, troubleshooting
+├── frontend/                      ← Next.js (Mili + Fase 5 patches)
 ├── connectors-library/            ← git submodule
+├── cloud-functions/
+│   ├── meta-facebook-insights/    ← deployed CF (Meta Marketing API → BQ)
+│   └── dv360-fetch/               ← scaffolded, not deployed yet
 ├── src/
-│   ├── api.py                     ← FastAPI / SSE entrypoint
+│   ├── api.py                     ← FastAPI entrypoint (catalog + run + credentials)
+│   ├── credentials/               ← tenant-scoped connections + secrets backends
+│   │   ├── db.py                  ← SQLAlchemy session + init_db
+│   │   ├── tables.py              ← ORM model (connections table)
+│   │   ├── schemas.py             ← Pydantic ConnectionRecord + status enum
+│   │   ├── repository.py          ← CRUD with tenant isolation
+│   │   ├── service.py             ← orchestration (upsert + lazy health check)
+│   │   ├── lifecycle.py           ← status state machine
+│   │   ├── secrets.py             ← public API for secret read/write/rotate
+│   │   └── secrets_backends.py    ← Local file / GCP CLI / GCP SDK backends
 │   ├── ingestion/
-│   │   ├── __init__.py
-│   │   ├── graph.py               ← LangGraph del flujo de ingesta
+│   │   ├── graph.py               ← LangGraph ingestion pipeline
 │   │   ├── nodes/
 │   │   │   ├── request_validator.py
-│   │   │   ├── data_architect.py  ← función Manifest.to_ddl()
+│   │   │   ├── data_architect.py  ← Manifest.to_ddl() + {tenant_id} token
 │   │   │   ├── connector_runner.py
 │   │   │   └── format_response.py
 │   │   ├── dispatcher/
-│   │   │   ├── base.py            ← Backend ABC
-│   │   │   ├── local.py           ← LocalBackend (dev)
-│   │   │   └── http.py            ← HTTPBackend (prod, Cloud Functions)
-│   │   ├── manifest/
-│   │   │   ├── schema.json        ← JSON Schema del manifest.json
-│   │   │   ├── loader.py          ← scan + parse de manifests
-│   │   │   └── catalog.py         ← endpoint /connectors
+│   │   │   ├── base.py            ← Backend ABC + AutoBackend router
+│   │   │   ├── local.py           ← LocalBackend (in-process import)
+│   │   │   └── http.py            ← HTTPBackend (signed id_token → CF)
+│   │   ├── manifest/              ← loader + catalog + JSON schema
 │   │   └── auth/
-│   │       └── tenant_context.py  ← Secret Manager multi-tenant
-│   ├── warehouse_explorer/
-│   │   ├── __init__.py
-│   │   ├── graph.py               ← LangGraph multi-agente (futuro)
-│   │   └── agents/
+│   │       └── tenant_context.py  ← reads ~/.mds/tenants.json
+│   ├── scripts/
+│   │   └── import_gcp_secrets.py  ← migrate legacy SM secrets into the CRUD
+│   ├── warehouse_explorer/        ← scaffolding only (post-MVP)
 │   └── shared/
-│       ├── __init__.py
-│       ├── lol/                   ← BaseLOL, payloads comunes
-│       ├── state.py               ← AgentState compartido
-│       ├── persistence.py         ← AsyncSqliteSaver wrapper
-│       └── observability.py       ← logging, traces, métricas
-├── scripts/
-│   ├── scaffold_connector.py      ← genera carpeta + manifest.json esqueleto
-│   └── deploy_connector.sh        ← deploya CF a un proyecto GCP
+│       ├── lol/                   ← LOL Protocol primitives
+│       ├── state.py
+│       └── observability.py
 └── requirements.txt
 ```
 
@@ -347,12 +353,6 @@ Las Cloud Functions de cada conector se despliegan **una por una**, en el proyec
 
 ---
 
-## 11. Coordinación con el trabajo previo de Facundo
+## 11. Historical notes
 
-En 2026-04 Facundo introdujo en backend:
-
-- `src/pending_deploy/` — artifact store / staging area para conectores generados por el SE-agent.
-- Refactor de cómo `api_research` y `table_ddl` viajan como artifacts en lugar de via `event_bus` (commit `b9b9f4f` modifica `src/main.py`).
-- "Prepared SE for multiple connectors" en `src/agents/software_engineer_agent.py` y `src/skills/software-engineer-connector-manager/SKILL.md` (commit `427ab59`).
-
-Ese trabajo **se elimina** en la Fase 4 de la migration. La rama `legacy-mds-agents` lo preserva para consulta histórica. La coordinación es prerrequisito de la Fase 4: la decisión de cambiar de dirección debe estar acordada con él antes de borrar.
+Pre-2026-05 the backend ran a multi-agent LLM ingestion graph with an artifact store / staging area in `src/pending_deploy/` and SE-agent skills under `src/agents/` + `src/skills/`. All of that was removed in the deterministic refactor (see [ADR-001](adr/001-multi-agent-to-deterministic-pipeline.md)). The full prior state is preserved at the `legacy-mds-agents` tag for archaeological lookups.

@@ -36,7 +36,7 @@ Output payload (``NodeLOL.data``) on OK::
         "columns":      list[dict],    # what the DDL declared, for the trace
     }
 
-See ``docs/migration-plan.md`` Fase 2 + ``schema.json`` for type rules.
+See ``docs/architecture.md`` §3 and ``src/ingestion/manifest/schema.json`` for the type rules.
 """
 
 from __future__ import annotations

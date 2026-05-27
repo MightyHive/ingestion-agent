@@ -1,4 +1,1 @@
-Rules:
--
--
--
+DELETED — was an empty placeholder. Remove with: rm docs/knowledge.txt

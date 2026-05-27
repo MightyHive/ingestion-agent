@@ -1,77 +1,22 @@
-# MDS — Runbook Fase 5
+# MDS — Operational Runbook
 
-**Objetivo:** Cerrar la transición a producción local con tenant-aware tables y `ingested_at` en cada fila. Backend MDS y frontend siguen corriendo en tu Mac; el connector (CF Meta) corre en `monks-mds-dev`.
+> Day-to-day operations for the MVP: re-deploy the Cloud Function, smoke the end-to-end flow, troubleshoot common failures, and plan the next step toward production.
+>
+> For first-time setup of a developer machine, see [`onboarding-local.md`](onboarding-local.md). For API shapes, see [`api.md`](api.md).
 
----
+## Index
 
-## 0. Qué cambió en código (resumen para auditar el diff)
-
-| Archivo | Cambio |
-|---|---|
-| `cloud-functions/meta-facebook-insights/main.py` | `_SYSTEM_FIELDS = {"ingested_at": "TIMESTAMP"}`; `_stamp_ingestion_timestamp(records)` se llama en `_write_records_to_bq` antes de derivar el schema; `ingested_at` queda último por orden de inserción del dict |
-| `cloud-functions/meta-facebook-insights/test_main.py` | +9 tests; total 46/46 |
-| `src/ingestion/dispatcher/base.py` | `ConnectorDispatcher.invoke` ahora solo delega — la validación de `context_required` ya no vive acá |
-| `src/ingestion/dispatcher/local.py` | `LocalBackend.invoke` enforce `tenant.assert_satisfies(required_keys)` al inicio |
-| `src/ingestion/tests/test_dispatcher_local.py` | 2 tests nuevos pin del enforce (directo en backend + vía dispatcher con runtime local) |
-| `src/ingestion/tests/test_dispatcher_http.py` | 2 tests nuevos pin del bypass (HTTPBackend + AutoBackend con `cloud_function_name`) |
-| `src/api.py` | `RunRequest.tenant_id: str \| None` opcional; blanco/`None` → `_DEFAULT_TENANT_ID="dev"` |
-| `src/ingestion/nodes/data_architect.py` | `_resolve_table_name` acepta `tenant_id`; `to_ddl` también; nuevo token `{tenant_id}` en `bronze_pattern`; `_sanitise_bq_token` normaliza para BQ; `node()` lee `params.target_table` (override del usuario) |
-| `src/ingestion/nodes/request_validator.py` | `_SYSTEM_PARAM_KEYS = frozenset({"target_table"})` — bypass del check de "unknown keys" para system params |
-| `src/ingestion/manifest/schema.json` | Documenta el nuevo token `{tenant_id}` en `bronze_pattern.description` |
-| `connectors-library/meta/facebook/manifest.json` | `bronze_pattern: "bronze.meta_facebook_ad_insights_{tenant_id}"` |
-| `src/ingestion/tests/test_data_architect.py` | +4 tests (token, sanitise, ignored cuando no se referencia, override de target_table) |
-| `src/ingestion/tests/test_request_validator.py` | +2 tests (acepta target_table, sigue rechazando typos en presencia de system params) |
-| `src/ingestion/tests/test_api_run.py` | +3 tests (tenant_id explícito, blanco → fallback, override de target_table) |
-
-**Suite:** 77/77 en sandbox + 46/46 CF. Los 11 de `test_api_run.py` requieren `fastapi` (instalado en tu Mac, no acá).
+1. [Re-deploy the Cloud Function (Meta Facebook)](#1-re-deploy-the-cloud-function-meta-facebook)
+2. [Smoke the end-to-end flow](#2-smoke-the-end-to-end-flow)
+3. [Credentials operations](#3-credentials-operations)
+4. [Troubleshooting matrix](#4-troubleshooting-matrix)
+5. [Path to production (post-MVP)](#5-path-to-production-post-mvp)
 
 ---
 
-## 1. Configuración local — `~/.mds/tenants.json`
+## 1. Re-deploy the Cloud Function (Meta Facebook)
 
-El loader de `TenantContext` espera un JSON con esta forma. Para Fase 5, como las credenciales reales del connector las resuelve la CF vía Secret Manager, **`context` puede ser un dict vacío** (`{}`) y `LocalBackend` no se va a quejar porque el manifest de Meta ya está bound a HTTP (tiene `cloud_function_name`).
-
-Pero para el caso `dev` (que también es el fallback) dejá un `context` con los mismos keys por si en algún momento querés correr con `MDS_RUNTIME=local`:
-
-```bash
-mkdir -p ~/.mds
-cat > ~/.mds/tenants.json <<'JSON'
-{
-  "dev": {
-    "gcp_project": "monks-mds-dev",
-    "service_account": "mds-runner@monks-mds-dev.iam.gserviceaccount.com",
-    "context": {}
-  },
-  "cliente1": {
-    "gcp_project": "monks-mds-dev",
-    "service_account": "mds-runner@monks-mds-dev.iam.gserviceaccount.com",
-    "context": {}
-  }
-}
-JSON
-chmod 600 ~/.mds/tenants.json
-```
-
-**Por qué `chmod 600`:** aunque hoy el dict está vacío, en cuanto cargues un `access_token` o un `service_account_json` para correr `MDS_RUNTIME=local` el archivo va a tener material sensible. Mejor el hábito de cero permisos para grupo/otros desde el día 1.
-
-**Verificación rápida:**
-
-```bash
-python - <<'PY'
-from ingestion.auth.tenant_context import TenantContext
-for tid in ["dev", "cliente1"]:
-    ctx = TenantContext.resolve(tid)
-    print(tid, "→", ctx.gcp_project, ctx.service_account, "context_keys:", list(ctx.context.keys()))
-PY
-```
-
-(Correr esto desde `src/` con el venv del back activo.)
-
----
-
-## 2. Re-deploy CF Meta a `monks-mds-dev`
-
-La CF necesita el nuevo `main.py` con `ingested_at`. Si ya tenés el script de deploy de la fase 4, es exactamente el mismo comando — solo cambió el contenido del bundle:
+Triggered whenever `cloud-functions/meta-facebook-insights/` changes (handler, requirements, vendored connector).
 
 ```bash
 cd cloud-functions/meta-facebook-insights
@@ -91,7 +36,7 @@ gcloud functions deploy meta-facebook-insights \
   --project=monks-mds-dev
 ```
 
-**Validar post-deploy** (smoke directo a la CF, igual que el último E2E que dio verde):
+**Validate post-deploy** (hits the CF directly with an ADC id_token — bypasses the backend):
 
 ```bash
 URL=$(gcloud functions describe meta-facebook-insights \
@@ -106,265 +51,176 @@ curl -s -X POST "$URL" \
     "tenant_id": "cliente1",
     "manifest_id": "meta_facebook_ad_insights",
     "manifest_version": "0.1.0",
+    "connection_id": "<your connection id, or omit for legacy 2-secret format>",
     "target_table": "bronze.meta_facebook_ad_insights_cliente1",
     "fields": ["account_id","campaign_name","spend","impressions"],
     "params": {"days_back": 7}
   }' | python -m json.tool
 ```
 
-**Validar en BQ que `ingested_at` quedó al final y como TIMESTAMP:**
+**Confirm `ingested_at` lands as the last BigQuery column (TIMESTAMP):**
 
 ```bash
 bq show --format=prettyjson monks-mds-dev:bronze.meta_facebook_ad_insights_cliente1 \
   | python -c "import sys,json;s=json.load(sys.stdin)['schema']['fields'];print('\n'.join(f\"{i+1:>2}. {f['name']} ({f['type']})\" for i,f in enumerate(s)))"
 ```
 
-Esperás ver `ingested_at (TIMESTAMP)` en la última línea.
+The Cloud Function supports two secret formats:
+
+- **New format** (when `connection_id` is in the payload): one JSON secret named `{tenant}-meta-{connection_id}` carrying `{access_token, ad_account_id}`. This is what the credentials CRUD creates.
+- **Legacy fallback** (when `connection_id` is omitted): two flat secrets `client_{tenant}_meta_access_token` and `client_{tenant}_meta_ad_account_id`.
+
+Both paths run today; new connections go through the CRUD, the legacy path stays available for tenants whose secrets were bootstrapped by hand.
 
 ---
 
-## 3. Smoke E2E vía backend MDS local
+## 2. Smoke the end-to-end flow
 
-Ahora el backend (no la CF directo). Esto valida toda la cadena nueva: `RunRequest.tenant_id` → graph → `data_architect` con `{tenant_id}` → `HTTPBackend` con id_token → CF → BQ con `ingested_at`.
+Run after re-deploying the CF or after any backend change that touches `src/ingestion/` or `src/api.py`.
 
-**Pre:**
-
-```bash
-export MDS_RUNTIME=http        # forzá HTTP backend; "auto" también sirve por el cloud_function_name
-# NO seteés MDS_CF_BASE_URL — querés que el HTTPBackend resuelva la URL canónica de GCF
-unset MDS_CF_BASE_URL
-```
-
-**Levantá el backend:**
+**Start the backend:**
 
 ```bash
-cd src && uvicorn api:app --reload --host 0.0.0.0 --port 8000
+cd ~/Monks/Agentes/ingestion-agent
+source .venv/bin/activate
+export MDS_RUNTIME=http   # or "auto" — the manifest has cloud_function_name set
+cd src
+uvicorn api:app --reload --host 0.0.0.0 --port 8000
 ```
 
-**Disparalo (otra terminal):**
+(`cd src` then `uvicorn api:app` is intentional — `ingestion` is a top-level package inside `src/`. Running `uvicorn src.api:app` from the repo root raises `ModuleNotFoundError: No module named 'ingestion'`.)
+
+**Hit `/api/run` with the active piloto credential:**
 
 ```bash
 curl -s -X POST http://localhost:8000/api/run \
   -H "Content-Type: application/json" \
   -d '{
-    "manifest_id": "meta_facebook_ad_insights",
-    "tenant_id": "cliente1",
+    "manifest_id":   "meta_facebook_ad_insights",
+    "tenant_id":     "cliente1",
+    "connection_id": "<your active connection id>",
     "params": {
-      "fields": ["account_id","campaign_name","spend","impressions"],
+      "fields":    ["account_id","campaign_name","spend","impressions"],
       "days_back": 7
     }
   }' | python -m json.tool
 ```
 
-**Qué esperar en el body:**
+**Expected:**
 
-- `tenant_id: "cliente1"`
-- `target_table: "bronze.meta_facebook_ad_insights_cliente1"` ← el backend resolvió el `{tenant_id}` token
-- `row_count > 0`
-- `columns` incluye `ingested_at` al final
+- `target_table: "bronze.meta_facebook_ad_insights_cliente1"` (the `{tenant_id}` token was substituted from `bronze_pattern`).
+- `row_count > 0`.
+- `columns` includes `ingested_at` as the last element.
+- BigQuery query confirms a fresh `MAX(ingested_at)` row:
 
-**Override de target_table** (caso edge para probar):
+```bash
+bq query --use_legacy_sql=false \
+  "SELECT COUNT(*) AS rows, MAX(ingested_at) AS last_batch
+   FROM \`monks-mds-dev.bronze.meta_facebook_ad_insights_cliente1\`"
+```
+
+**Override the target table** (validates the system param):
 
 ```bash
 curl -s -X POST http://localhost:8000/api/run \
   -H "Content-Type: application/json" \
   -d '{
     "manifest_id": "meta_facebook_ad_insights",
-    "tenant_id": "cliente1",
+    "tenant_id":   "cliente1",
     "params": {
-      "fields": ["account_id","campaign_name","spend"],
-      "days_back": 7,
+      "fields":       ["account_id","campaign_name","spend"],
+      "days_back":    7,
       "target_table": "sandbox.meta_adhoc_test"
     }
   }' | python -m json.tool
 ```
 
-`target_table` en el body debe ser `sandbox.meta_adhoc_test`, no la versión con `_cliente1`.
+`target_table` in the response must be `sandbox.meta_adhoc_test` (the override wins over the manifest default).
 
 ---
 
-## 4. Frontend — cambios aplicados (Niveles 1+2+3)
+## 3. Credentials operations
 
-> **Estado:** ya aplicados en `frontend/` en esta sesión. Pasale el diff a Mili cuando muevas la rama; el cambio respeta los patrones existentes (zustand + persist, `<select>` nativo, `<Input>` shadcn). Type-check `npx tsc --noEmit` pasa limpio.
+The credentials CRUD lives in `src/credentials/` (DB + secrets backends + service) and surfaces via `/api/credentials/*` (see [`api.md` §4](api.md#4-credentials)).
 
-### 4.0 Archivos tocados
+### Local development
 
-| Archivo | Cambio |
-|---|---|
-| `frontend/src/lib/api/catalog.ts` | `runIngestion(manifestId, params, tenantId?)` — incluye `tenant_id` en el body si se pasa |
-| `frontend/src/lib/stores/tenantStore.ts` (NUEVO) | Zustand store con `tenants[]` y `selectedTenantId`, persistido en `localStorage`. Lista default desde env `NEXT_PUBLIC_TENANTS` (CSV) o `["dev","cliente1"]`. Helper `getActiveTenantId()` para uso fuera de React |
-| `frontend/src/lib/stores/templateStore.ts` | `SavedTemplate` gana `targetTableOverride?: string` |
-| `frontend/src/lib/stores/connectorStore.ts` | `runPipeline()` lee tenant del store y lo manda a `runIngestion`; `proposeTemplateFromSelection()` pasa `tenantId` al builder para que el preview ya muestre la tabla con `{tenant_id}` sustituido |
-| `frontend/src/lib/export-ingestion.ts` | `runTemplateIngestion()` lee tenant + manda `targetTableOverride` (si lo hay) en `params.target_table` |
-| `frontend/src/lib/template-proposal.ts` | `resolveTableName()` acepta `tenantId`; substituye `{tenant_id}` con sanitización idéntica a la del backend |
-| `frontend/src/components/layout/TenantSelector.tsx` (NUEVO) | Dropdown nativo en el Header. SSR-safe (solo renderiza tras `mounted=true` para evitar mismatch de hydration con `localStorage`) |
-| `frontend/src/components/layout/Header.tsx` | Renderiza `<TenantSelector />` antes de Help/Notifications |
-| `frontend/src/components/data-connection/TemplateStep.tsx` | "Suggested table" pasa a ser `TargetTableRow` editable. Auto-sincroniza con el preview hasta que el usuario edita (`targetTableDirty`); `handleApprove` persiste el override solo si está editado |
-
-### 4.1 Contrato `POST /api/run` (el que el front ya manda)
-
-```json
-{
-  "manifest_id": "meta_facebook_ad_insights",
-  "tenant_id": "cliente1",
-  "params": {
-    "fields": ["account_id", "campaign_name", "spend"],
-    "days_back": 14,
-    "target_table": "bronze.meta_facebook_ad_insights_cliente1"
-  }
-}
+```bash
+export MDS_SECRETS_BACKEND=local           # default — payloads in <repo>/.credentials_secrets.json
+# (override DB location if needed)
+export MDS_DB_PATH=/tmp/mds_credentials.db
 ```
 
-- **`tenant_id`** se incluye automáticamente desde el `tenantStore` (selector del Header).
-- **`params.target_table`** se incluye solo cuando el template guardado tiene `targetTableOverride` (= el usuario lo editó en el step "Template" antes de guardar).
+The first time the backend starts (`init_db` runs in the FastAPI `lifespan` hook), SQLAlchemy creates the `connections` table. Restart `uvicorn` if you change `MDS_DB_PATH`.
 
-### 4.2 Configuración del front (env vars nuevas)
+### Production / piloto (GCP Secret Manager)
 
-En `frontend/.env.local` (creá el archivo si no existe):
-
-```
-NEXT_PUBLIC_API_URL=http://localhost:8000
-NEXT_PUBLIC_MOCK=false
-NEXT_PUBLIC_TENANTS=dev,cliente1
-NEXT_PUBLIC_DEFAULT_TENANT_ID=cliente1
+```bash
+export MDS_SECRETS_BACKEND=gcp
+export MDS_GCP_PROJECT=monks-mds-dev
 ```
 
-- `NEXT_PUBLIC_TENANTS` — CSV de tenants que pueblan el dropdown. Sin esto, default = `["dev","cliente1"]`.
-- `NEXT_PUBLIC_DEFAULT_TENANT_ID` — cuál sale seleccionado la primera vez (después gana lo que persistió el usuario en `localStorage`).
+The `gcp` backend shells out to `gcloud secrets`. ADC must be logged in as a user (or SA) with `roles/secretmanager.admin` (for create/disable) and `roles/secretmanager.secretAccessor` (for read).
 
-### 4.3 Cómo se ve el flujo end-to-end ahora
+### Importing legacy secrets
 
-1. Usuario abre la app → en el Header arriba a la derecha aparece el dropdown "CLIENT" con `dev` / `cliente1` (el último elegido queda persistido).
-2. Va a **Data Connection** → elige Meta Facebook → selecciona reporting scope + campos.
-3. Avanza al step **Template** → ve en el panel derecho:
-   - "Active client (tenant)": `cliente1`
-   - "Target BigQuery table": input prellenado con `bronze.meta_facebook_ad_insights_cliente1` (substitución vive del manifest), editable si quiere cambiarlo.
-4. Guarda el template (con o sin override).
-5. **Data Export** / **Export Planner** → "Run now" → `runTemplateIngestion` envía el body con `tenant_id` + `params.target_table` (si hay override).
-6. Backend resuelve todo y escribe en BQ. La respuesta vuelve, `target_table` está confirmada en el panel de preview.
+If a tenant already has secrets in Secret Manager from the pre-CRUD era (the flat `client_<tenant>_<provider>_<field>` convention), bring them under the CRUD:
 
-### 4.4 Lo que NO cambió en el front
-
-- Stores `credentialStore`, `destinationStore`, `exportJobStore` siguen igual.
-- Componentes de `data-export/` (`DestinationsStep`, `ExtractionStep`, `ExportSchedulerStep`) no se tocaron — el target table se setea en Data Connection y viaja en el template.
-- Las rutas SSE `/api/chat` y `/api/submit_input` siguen sin enviar tenant (no son flujo de ingesta real).
-
-### 4.1 Contrato actualizado de `POST /api/run`
-
-```json
-{
-  "manifest_id": "meta_facebook_ad_insights",
-  "tenant_id": "cliente1",
-  "params": {
-    "fields": ["account_id", "campaign_name", "spend"],
-    "days_back": 14,
-    "target_table": "bronze.meta_facebook_ad_insights_cliente1"
-  }
-}
+```bash
+PYTHONPATH=src python src/scripts/import_gcp_secrets.py \
+  --project monks-mds-dev \
+  --tenants dev,cliente1
 ```
 
-**Lo nuevo:**
+The script reads existing secrets, groups them by `(tenant, provider)`, and writes new JSON-bundled secrets in the format the CRUD expects (`{tenant}-{provider}-{connection_id}`), plus the matching `connections` DB rows. The legacy secrets are left in place — the Cloud Function still falls back to them when `connection_id` is absent.
 
-1. **`tenant_id`** (top-level, opcional pero recomendado): selector de cliente. Si no se manda o viene blanco, el back usa `"dev"`. Debe ir como input del usuario o como query param de la página.
-2. **`params.target_table`** (opcional): si el usuario lo edita, va acá. Si no, **NO MANDARLO** y dejá que el back compute el default desde el manifest.
+### Rotation, revocation
 
-### 4.2 Cómo computar el default de `target_table` para mostrar en el form
-
-El front no necesita lógica especial. Cuando el usuario seleccione un connector:
-
-1. Llamá `GET /api/catalog/{manifest_id}` → vas a recibir el manifest completo, incluido `table_naming.bronze_pattern` (p.ej. `"bronze.meta_facebook_ad_insights_{tenant_id}"`).
-2. Substituí los tokens cliente-side con los valores que ya tenés:
-   - `{tenant_id}` → el tenant seleccionado, sanitizado (lowercase, `-`/espacios → `_`, solo `[a-z0-9_]`)
-   - `{platform}`, `{connector}`, `{id}` → vienen en el manifest
-   - `{version_major}` → split por `.` del `manifest.version` y agarrar el `[0]`
-3. Mostrá el resultado en un input editable con label "Tabla destino".
-4. Si el usuario lo edita, mandalo en `params.target_table`. Si lo dejó como vino del default, no lo mandes.
-
-**Helper JS de referencia** (~20 líneas, dejalo en utils):
-
-```js
-function sanitiseBqToken(value) {
-  return value.trim().toLowerCase()
-    .replace(/[-\s]+/g, '_')
-    .replace(/[^a-z0-9_]/g, '');
-}
-
-function resolveTargetTableDefault(manifest, tenantId) {
-  const pattern = manifest?.table_naming?.bronze_pattern || 'bronze.{id}';
-  const version = (manifest.version || '0.0.0').split(/[.+-]/)[0];
-  const tokens = {
-    platform: manifest.platform || '',
-    connector: manifest.connector || '',
-    id: manifest.id,
-    version_major: version,
-    tenant_id: sanitiseBqToken(tenantId || ''),
-  };
-  return pattern.replace(/\{(\w+)\}/g, (_, k) => tokens[k] ?? '');
-}
-```
-
-### 4.3 UX recomendada
-
-- **Tenant selector** primero (dropdown alimentado por la lista de tenants — por ahora hardcoded `["dev", "cliente1"]`, en una fase futura lo lee de un endpoint nuevo).
-- **Connector selector** después.
-- **Tabla destino**: input editable, prellenado con `resolveTargetTableDefault(manifest, tenantId)`, recalcula cuando el usuario cambia el tenant.
-- El resto de los params del manifest sigue igual.
-
-### 4.4 Lo que NO cambia
-
-- Los códigos de respuesta (200/400/422/502/500) y el header `X-Request-Id`.
-- La forma del `formatted_response` que devuelve `/api/run` (sigue trayendo `tenant_id`, `target_table`, `row_count`, `columns`, `rows_preview`, `ddl`, `errors`).
-- El catálogo: `GET /api/catalog` y `GET /api/catalog/{id}` siguen iguales en forma.
+- **Rotation:** another `PUT /api/credentials/{provider}/{connection_id}` with the new payload merges into the existing secret and adds a new version. The CF reads `latest`, so the next run picks up the new value.
+- **Revocation:** `PATCH /api/credentials/{connection_id}/status` with `{"status": "revoked"}` disables every secret version in the backend before flipping the row. Revoked is terminal — to use that `connection_id` again, pick a different one.
+- **Soft deactivation:** the UI's "delete" button issues `PATCH {"status": "inactive"}`. The row stays in the DB. To bring it back, re-activate via PATCH; to use the same `connection_id` for a brand new credential, deactivate then revoke, then create with a new `connection_id`.
 
 ---
 
-## 5. Cómo pasar a prod (cuando estés listo)
+## 4. Troubleshooting matrix
 
-Pregunta tuya: *"si quisiera pasarlo a prod como seria? con CF?"*
-
-**Recomendación: Cloud Run para el back, CFs para los connectors** (que ya es lo que estás haciendo).
-
-| Componente | Recomendación | Por qué |
+| Symptom | Likely cause | Fix |
 |---|---|---|
-| **CFs de connectors** | Seguir en CF gen2 (lo que ya tenés) | Aislamiento por connector, cold start tolerable, deploy independiente. Patrón ya consolidado en `connectors-library` |
-| **Back MDS (FastAPI)** | **Cloud Run** | Long-running HTTP server, no funciona bien como CF. Cloud Run te da escala 0→N, autenticación IAM nativa, mismo modelo de SA, custom domain via load balancer |
-| **Frontend** | **Cloud Run** o **Firebase Hosting** (si es estático) | Lo que use Mili. Si es Next.js con SSR → Cloud Run; si es Vite/CRA build estático → Firebase Hosting |
-| **tenants.json** | **Secret Manager** (no FS) | En prod no podés depender de `~/.mds/`. El loader de `TenantContext` ya está mockeable (`set_loader_for_testing`); en prod, mete una variante que lea de SM y montala con env var `MDS_TENANTS_SOURCE=secret-manager` |
-| **CORS** | Cerrar a tu dominio del front | Hoy `allow_origins=["*"]` por dev. Cambiarlo en `src/api.py` antes del deploy a prod |
-| **Auth front→back** | IAP (Identity-Aware Proxy) o Firebase Auth + verificación de id_token en el handler | Decisión la dejo para cuando tengamos un user model real |
-
-**Orden sugerido** (no para ahora, para cuando quieras pasar):
-
-1. Containerizar el back (`Dockerfile` simple con uvicorn).
-2. Implementar el loader de tenants desde SM detrás de un flag (`MDS_TENANTS_SOURCE`).
-3. Cerrar CORS.
-4. `gcloud run deploy mds-api --source=. --region=us-central1 --no-allow-unauthenticated --service-account=mds-api-prod@...`.
-5. Cloud Run necesita IAM `roles/cloudfunctions.invoker` sobre cada CF para que pueda firmar id_tokens.
-6. Frontend deploy aparte; configurar la base URL del back en una env var de build.
-
-Si querés que armemos esto al detalle (Dockerfile, módulo SM, IAM, etc.) cuando llegue el momento, lo hacemos en una sesión nueva.
+| `tenants file not found at ~/.mds/tenants.json` | Skipped onboarding step | Follow [`onboarding-local.md`](onboarding-local.md) §4 |
+| `PermissionDenied` from `gcloud auth application-default print-access-token` | Missing `roles/iam.serviceAccountTokenCreator` over `mds-cf-runner` | Ask Ivan for the role on that SA |
+| `/api/run` returns 502 `connector_auth_unavailable: could not obtain an id_token` | The HTTPBackend cannot fetch an id_token for the CF audience | Set `MDS_CF_INVOKER_SA=mds-cf-meta@monks-mds-dev.iam.gserviceaccount.com` in `.env`, or set `GOOGLE_APPLICATION_CREDENTIALS` to a SA key file |
+| `/api/run` returns 502 `connector_forbidden` | Caller SA lacks `roles/cloudfunctions.invoker` on the CF | Grant the role to whichever SA you are impersonating |
+| CF logs show `MISSING_SECRET` | The secret the CF tried to read does not exist (either the JSON-format `{tenant}-{provider}-{connection_id}` or the legacy `client_{tenant}_{provider}_{field}`) | Create the credential via the UI (`/api/credentials`) for the active tenant, or bootstrap the legacy secrets with `gcloud secrets create` |
+| `/api/credentials` returns 409 `connection_inactive` on PUT | A previously deactivated/revoked row exists with that `connection_id` | Either `PATCH status=active` to revive it, or use a new `connection_id` |
+| Frontend: CLIENT dropdown empty | `NEXT_PUBLIC_TENANTS` not set in `frontend/.env.local` | Copy from `frontend/.env.example` |
+| `npx tsc --noEmit` errors | Stale `node_modules` or type drift after pull | `npm install`, then re-run |
+| BigQuery table missing `ingested_at` | CF was not re-deployed after the `ingested_at` change | Re-deploy per §1 |
 
 ---
 
-## 6. Checklist final
+## 5. Path to production (post-MVP)
 
-**Backend / infra (vos):**
+The MVP runs the backend on a developer Mac, the CF in `monks-mds-dev`, secrets in Secret Manager or a local JSON file, and the SQLite DB on disk. To put MDS in front of real users:
 
-- [ ] `~/.mds/tenants.json` creado con `dev` y `cliente1` (`chmod 600`)
-- [ ] CF Meta re-deployada — `bq show` confirma `ingested_at TIMESTAMP` al final
-- [ ] Smoke directo a la CF responde 200 con `meta.ingested_at` en el body
-- [ ] Backend MDS local levantado con `MDS_RUNTIME=http`
-- [ ] Smoke vía backend con `tenant_id=cliente1` → tabla `bronze.meta_facebook_ad_insights_cliente1`
-- [ ] Smoke con `params.target_table` custom → respeta el override
-- [ ] (En tu Mac) `pytest src/` corre los 88 tests verdes (77 sandbox + 11 `test_api_run.py` que requieren fastapi)
+| Component | Recommendation | Why |
+|---|---|---|
+| **Connector CFs** | Keep on Cloud Functions gen2 (already there) | Per-connector isolation, tolerable cold start, independent deploys |
+| **Backend (FastAPI)** | **Cloud Run** | Long-running HTTP server, not a fit for CF; gives 0→N autoscale, native IAM auth, custom domain via load balancer |
+| **Frontend (Next.js)** | Cloud Run (SSR) or Firebase Hosting (static) | Mili decides based on the SSR posture |
+| **`tenants.json`** | **Secret Manager** behind `MDS_TENANTS_FILE` / a new `MDS_TENANTS_SOURCE` flag | No FS dependency in prod; loader is already mockable (`set_loader_for_testing`) |
+| **Credentials DB** | Cloud SQL (Postgres) — keep SQLAlchemy, change the URL | SQLite on Cloud Run dies on every redeploy |
+| **Credentials secrets backend** | `MDS_SECRETS_BACKEND=gcp` permanently | Stop using the local JSON backend |
+| **CORS** | Restrict to the frontend domain | Today `allow_origins=["*"]` |
+| **Auth (UI → API)** | IAP (Identity-Aware Proxy) or Firebase Auth + id_token verification | Pick when there is a real user model |
 
-**Frontend (ya aplicado, validar en navegador):**
+**Suggested order:**
 
-- [ ] `frontend/.env.local` con `NEXT_PUBLIC_TENANTS`, `NEXT_PUBLIC_DEFAULT_TENANT_ID`, `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_MOCK=false`
-- [ ] `npm run dev` levanta sin errores; `npx tsc --noEmit` exit 0
-- [ ] Header muestra el selector `CLIENT: cliente1` y persiste la elección al recargar
-- [ ] Data Connection → Template step → "Target BigQuery table" muestra `bronze.meta_facebook_ad_insights_cliente1`
-- [ ] Cambiar el tenant en el Header y volver al Template → el preview se actualiza (si no editaste el input)
-- [ ] Editar el target table → guardar → en `localStorage` `templates-storage` el template tiene `targetTableOverride`
-- [ ] Export Planner → "Run now" → la respuesta del back trae el `target_table` esperado
-- [ ] PR/diff revisado con Mili antes del merge a main (cambios en `frontend/src/lib/stores`, `components/layout`, `components/data-connection`)
+1. Containerize the backend (slim `Dockerfile` with uvicorn).
+2. Implement the Secret Manager loader for tenants behind a flag.
+3. Migrate the credentials DB to Cloud SQL.
+4. Close CORS and pin allowed origins.
+5. `gcloud run deploy mds-api --source=. --region=us-central1 --no-allow-unauthenticated --service-account=mds-api-prod@...`.
+6. Grant the Cloud Run SA `roles/cloudfunctions.invoker` on every connector CF (so HTTPBackend can sign id_tokens server-side without `gcloud` CLI).
+7. Deploy the frontend separately, set the backend base URL via a build-time env var.
+
+None of this is on the immediate critical path — file as a follow-up when the MVP graduates.

@@ -4,7 +4,7 @@
 
 ## Status
 
-**Scaffolding only.** Implementation deferred until the deterministic ingestion pipeline is live in production (post Fase 5 of `docs/migration-plan.md`).
+**Scaffolding only.** Implementation deferred — the deterministic ingestion pipeline is the current focus. See `docs/architecture.md` for how this subsystem is meant to relate to `src/ingestion/`.
 
 ## Why this lives here
 

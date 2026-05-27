@@ -33,6 +33,16 @@ dist/
 traces/
 *.log
 
+# Credentials module SQLite database (metadata for tenant connections).
+# Lives at the repo root by default (MDS_DB_PATH override). The payloads
+# live in .credentials_secrets.json (already covered by /*.json above) or
+# in GCP Secret Manager, never in this DB — but tenant_ids / connection
+# names should not be committed either.
+mds_credentials.db
+mds_credentials.db-journal
+mds_credentials.db-wal
+mds_credentials.db-shm
+
 # SQLite leftovers (the legacy AsyncSqliteSaver checkpointer was removed
 # in Phase 4 but old local DBs may still be on developer machines).
 checkpoints.db

@@ -27,7 +27,7 @@ Output payload (``data`` of the NodeLOL) on OK::
         "matched_one_of":   list[str] | None,
     }
 
-See ``docs/migration-plan.md`` Fase 2.
+See ``docs/architecture.md`` §3 (ingestion subsystem) for the wider pipeline context.
 """
 
 from __future__ import annotations

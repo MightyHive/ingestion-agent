@@ -109,6 +109,19 @@ pytest src/ingestion/tests/ -q
 
 Tienen que pasar los 77 tests verdes.
 
+**Variables de entorno opcionales del backend** (defaults entre paréntesis):
+
+| Variable | Default | Cuándo tocarla |
+|---|---|---|
+| `MDS_RUNTIME` | `local` | Setealo a `http` para que el dispatcher llame a la CF real en vez de importar el conector en proceso. Lo hacés en el paso 8. |
+| `MDS_CF_INVOKER_SA` | unset | SA a impersonar cuando el HTTPBackend pide un id_token vía gcloud CLI. Setealo a `mds-cf-meta@monks-mds-dev.iam.gserviceaccount.com` si tu ADC es de usuario (no SA key). Vos necesitás `roles/iam.serviceAccountTokenCreator` sobre esa SA. |
+| `MDS_SECRETS_BACKEND` | `local` | Dónde guarda payloads la CRUD de credenciales. `local` → JSON en `<repo>/.credentials_secrets.json` (dev). `gcp` → Secret Manager vía gcloud CLI (cuando trabajás contra Secret Manager real). |
+| `MDS_GCP_PROJECT` | `monks-mds-dev` | Proyecto para `MDS_SECRETS_BACKEND=gcp`. |
+| `MDS_DB_PATH` | `<repo>/mds_credentials.db` | Path al SQLite de credenciales. El default va al repo root (gitignored). |
+| `MDS_TENANTS_FILE` | `~/.mds/tenants.json` | Override del path del registry de tenants. |
+
+Estas variables podés exportarlas a mano o ponerlas en un `.env` en la raíz del repo — el backend hace `load_dotenv()` al arrancar.
+
 ## 7. Frontend — instalar dependencias
 
 ```bash
@@ -187,16 +200,47 @@ Tiene que devolver filas y un timestamp reciente.
 | `POST /api/run` devuelve 500 con `connector_auth_required` | Los secretos del tenant no están en Secret Manager con la convención esperada | Ver `docs/fase5-runbook.md §3`, hablar con Facu |
 | `npx tsc --noEmit` tira errores | Falta `npm install` o hay cambios sin tipar | Correr `npm install` y revisar el error |
 
-## 11. Convenciones a respetar
+## 11. Cargar credenciales para tu tenant (primer setup)
+
+Para que `cliente1` corra contra Meta de verdad necesitás que haya una credencial cargada. Hay dos caminos:
+
+**Camino A — desde la UI (recomendado para todo flujo nuevo):**
+
+1. Levantá el backend + frontend (pasos 8).
+2. Abrí `http://localhost:3000`, andá a **Credentials Library**.
+3. Click "Add Connection" → elegí plataforma (META), completá `access_token` + `ad_account_id`, dale nombre/brand/market.
+4. La UI llama `PUT /api/credentials/meta/<id>` → el backend escribe el secret en el backend configurado (`MDS_SECRETS_BACKEND=local` o `gcp`) y crea la row en `mds_credentials.db`.
+5. La próxima vez que dispares un Run desde Export Planner, el frontend pasa `connection_id` en el body de `/api/run` y la CF resuelve ese secret.
+
+**Camino B — importar secretos ya existentes en Secret Manager**:
+
+Si tu tenant ya tiene secretos cargados con la convención legacy (`client_<tenant>_<provider>_<field>`), corré el script de migración:
+
+```bash
+PYTHONPATH=src python src/scripts/import_gcp_secrets.py \
+  --project monks-mds-dev \
+  --tenants dev,cliente1
+```
+
+El script lee los secretos viejos, los empaqueta en el formato nuevo (`{tenant}-{provider}-{connection_id}` con JSON payload) y agrega las rows correspondientes a la DB. Los secretos legacy quedan vivos: la CF cae al formato viejo cuando el request no incluye `connection_id`.
+
+Más detalle de la CRUD (endpoints, errores, rotación, revocación) en [`api.md` §4](api.md#4-credentials) y [`fase5-runbook.md` §3](fase5-runbook.md#3-credentials-operations).
+
+## 12. Convenciones a respetar
 
 - **No commitear `~/.mds/tenants.json`** ni nada con credenciales. Está fuera del repo a propósito.
-- **No commitear `frontend/.env.local`** ni `config/tenants.json` poblado. Ambos están en `.gitignore`.
-- **No tocar `frontend/` salvo cambios coordinados con Mili.** La excepción de Fase 5 (Niveles 1+2+3) fue puntual; cualquier UI nueva o refactor vuelve a su cola.
-- **Secretos en Secret Manager**: convención `client_<tenant_id>_<platform>_<key>` (ej: `client_cliente1_meta_access_token`). El bootstrap inicial lo hace Ivan / Facu — no escribas a SM sin alinear con ellos.
+- **No commitear `frontend/.env.local`**, `config/tenants.json` poblado, `mds_credentials.db`, ni `.credentials_secrets.json`. Todos están en `.gitignore`.
+- **Antes de cualquier `git add .`**, correr `git status` y verificar que no aparezcan archivos con material sensible. Preferí `git add <archivo>` explícito.
+- **Cambios al frontend**: coordinar con Mili. La excepción de Fase 5 (selector de tenant + target table editable + CRUD credenciales wired) fue puntual; refactors o UI nueva vuelven a su cola.
+- **Secrets en Secret Manager**: hoy hay dos convenciones en producción.
+  - **Nueva** (usada por la CRUD): `{tenant_id}-{provider}-{connection_id}` con payload JSON `{access_token, ad_account_id, ...}`.
+  - **Legacy** (bootstrap manual previo a la CRUD): `client_<tenant_id>_<platform>_<key>` con payload plano por key.
 
-## 12. Siguientes pasos
+  Las dos siguen funcionando para no romper el piloto; las cargas nuevas pasan por la CRUD.
 
-- Para entender la arquitectura: `docs/architecture.md`.
-- Para el contrato de la API: `docs/api.md`.
-- Para el runbook completo de Fase 5 (deploy CF, smoke E2E avanzado, plan post-MVP): `docs/fase5-runbook.md`.
-- Para el checklist de cierre del MVP: `docs/mvp-phase5-checklist.md`.
+## 13. Siguientes pasos
+
+- Arquitectura: [`docs/architecture.md`](architecture.md).
+- Contrato API: [`docs/api.md`](api.md).
+- Operaciones recurrentes (re-deploy CF, smoke E2E, troubleshooting, plan post-MVP): [`docs/fase5-runbook.md`](fase5-runbook.md).
+- Decisión arquitectónica del refactor: [`docs/adr/001-multi-agent-to-deterministic-pipeline.md`](adr/001-multi-agent-to-deterministic-pipeline.md).
