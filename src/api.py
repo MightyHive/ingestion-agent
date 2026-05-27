@@ -30,14 +30,33 @@ if you need the historical implementation.
 from __future__ import annotations
 
 import uuid
+from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+# Load .env from the repo root before any other imports that read env vars.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+except ImportError:
+    pass
+
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from credentials import init_db
+from credentials import service as credentials_service
+from credentials.exceptions import (
+    ConnectionInactiveError,
+    ConnectionNotFoundError,
+    InvalidStatusTransitionError,
+    SecretManagerError,
+    SecretPayloadError,
+)
+from credentials.schemas import ConnectionRecord, ConnectionStatus
 from ingestion import build_graph
 from ingestion.manifest import (
     CATALOG_API_VERSION,
@@ -46,7 +65,13 @@ from ingestion.manifest import (
 )
 
 
-app = FastAPI(title="MDS API", version="2.0.0")
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="MDS API", version="2.0.0", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -98,6 +123,15 @@ class RunRequest(BaseModel):
             "Also used to substitute the {tenant_id} token in bronze_pattern."
         ),
     )
+    connection_id: str | None = Field(
+        default=None,
+        description=(
+            "ID of the credentials connection to use. When provided, the Cloud "
+            "Function reads a single JSON secret named {tenant}-{provider}-{connection_id} "
+            "from Secret Manager. When omitted, the CF falls back to the legacy "
+            "two-secret format (client_{tenant}_{provider}_{field})."
+        ),
+    )
     params: dict[str, Any] = Field(
         default_factory=dict,
         description=(
@@ -107,6 +141,18 @@ class RunRequest(BaseModel):
             "Other keys must match the manifest's params schema."
         ),
     )
+
+
+class CredentialUpsertRequest(BaseModel):
+    payload: dict[str, Any] | str = Field(
+        ...,
+        description="Secret payload (token string or JSON object).",
+    )
+    name: str | None = Field(default=None)
+
+
+class CredentialStatusPatchRequest(BaseModel):
+    status: ConnectionStatus
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +227,128 @@ async def _request_validation_handler(
 # ---------------------------------------------------------------------------
 
 
+def _connection_payload(record: ConnectionRecord) -> dict[str, Any]:
+    return {
+        "connection_id": record.connection_id,
+        "tenant_id": record.tenant_id,
+        "provider": record.provider,
+        "secret_id": record.secret_id,
+        "status": record.status.value,
+        "name": record.name,
+        "created_at": record.created_at.isoformat(),
+        "updated_at": record.updated_at.isoformat(),
+    }
+
+
+def _credentials_error_response(request_id: str, exc: Exception) -> JSONResponse:
+    if isinstance(exc, SecretPayloadError):
+        return _error_response(request_id=request_id, status_code=400, error_key="invalid_payload", reason=str(exc))
+    if isinstance(exc, ConnectionNotFoundError):
+        return _error_response(request_id=request_id, status_code=404, error_key="connection_not_found", reason=str(exc))
+    if isinstance(exc, ConnectionInactiveError):
+        return _error_response(request_id=request_id, status_code=409, error_key="connection_inactive", reason=str(exc))
+    if isinstance(exc, InvalidStatusTransitionError):
+        return _error_response(request_id=request_id, status_code=409, error_key="invalid_status_transition", reason=str(exc))
+    if isinstance(exc, SecretManagerError):
+        return _error_response(request_id=request_id, status_code=502, error_key="secret_manager_failed", reason=str(exc))
+    return _error_response(request_id=request_id, status_code=500, error_key="internal", reason=str(exc) or exc.__class__.__name__)
+
+
+# ---------------------------------------------------------------------------
+# Credentials endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.put("/api/credentials/{provider}/{connection_id}")
+async def upsert_credential(
+    provider: str,
+    connection_id: str,
+    request: CredentialUpsertRequest,
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
+) -> JSONResponse:
+    request_id = str(uuid.uuid4())
+    tenant_id = (x_tenant_id or "").strip() or _DEFAULT_TENANT_ID
+    try:
+        record = credentials_service.upsert_connection(
+            tenant_id=tenant_id,
+            provider=provider,
+            connection_id=connection_id,
+            payload=request.payload,
+            name=request.name,
+        )
+    except Exception as exc:
+        return _credentials_error_response(request_id, exc)
+    return JSONResponse(
+        status_code=200,
+        content={"connection": _connection_payload(record)},
+        headers={"X-Request-Id": request_id},
+    )
+
+
+@app.get("/api/credentials")
+async def list_credentials(
+    status: ConnectionStatus | None = None,
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
+) -> JSONResponse:
+    request_id = str(uuid.uuid4())
+    tenant_id = (x_tenant_id or "").strip() or _DEFAULT_TENANT_ID
+    try:
+        records = credentials_service.list_connections(tenant_id=tenant_id, status=status)
+    except Exception as exc:
+        return _credentials_error_response(request_id, exc)
+    return JSONResponse(
+        status_code=200,
+        content={"count": len(records), "connections": [_connection_payload(r) for r in records]},
+        headers={"X-Request-Id": request_id},
+    )
+
+
+@app.get("/api/credentials/{connection_id}")
+async def get_credential(
+    connection_id: str,
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
+) -> JSONResponse:
+    request_id = str(uuid.uuid4())
+    tenant_id = (x_tenant_id or "").strip() or _DEFAULT_TENANT_ID
+    try:
+        record = credentials_service.get_connection(tenant_id=tenant_id, connection_id=connection_id)
+    except Exception as exc:
+        return _credentials_error_response(request_id, exc)
+    return JSONResponse(
+        status_code=200,
+        content={"connection": _connection_payload(record)},
+        headers={"X-Request-Id": request_id},
+    )
+
+
+@app.patch("/api/credentials/{connection_id}/status")
+async def patch_credential_status(
+    connection_id: str,
+    request: CredentialStatusPatchRequest,
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
+) -> JSONResponse:
+    request_id = str(uuid.uuid4())
+    tenant_id = (x_tenant_id or "").strip() or _DEFAULT_TENANT_ID
+    try:
+        record = credentials_service.update_connection_status(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            status=request.status,
+        )
+    except Exception as exc:
+        return _credentials_error_response(request_id, exc)
+    return JSONResponse(
+        status_code=200,
+        content={"connection": _connection_payload(record)},
+        headers={"X-Request-Id": request_id},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Ingestion endpoint
+# ---------------------------------------------------------------------------
+
+
 @app.post("/api/run")
 async def run_ingestion(request: RunRequest) -> JSONResponse:
     """Run the deterministic ingestion pipeline for a single manifest.
@@ -209,6 +377,7 @@ async def run_ingestion(request: RunRequest) -> JSONResponse:
         "manifest_id": request.manifest_id,
         "params": request.params,
         "tenant_id": tenant_id,
+        "connection_id": (request.connection_id or "").strip() or None,
         "node_results": [],
         "obs_usages": [],
     }

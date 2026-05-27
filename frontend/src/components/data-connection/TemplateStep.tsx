@@ -7,6 +7,7 @@ import { useConnectorStore } from "@/lib/stores/connectorStore"
 import type { TemplateProposal } from "@/lib/stores/connectorStore"
 import { useTemplateStore } from "@/lib/stores/templateStore"
 import { useTenantStore } from "@/lib/stores/tenantStore"
+import { fetchCredentials, decodeName, type BackendConnection } from "@/lib/api/credentials"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
@@ -54,6 +55,8 @@ export default function TemplateStep({
 
   const [saved, setSaved] = useState(false)
   const [templateName, setTemplateName] = useState("")
+  const [selectedConnectionId, setSelectedConnectionId] = useState<string>("")
+  const [connections, setConnections] = useState<BackendConnection[]>([])
   /** Editable BQ target table preview (with `{tenant_id}` already substituted). */
   const [targetTable, setTargetTable] = useState("")
   /**
@@ -62,6 +65,20 @@ export default function TemplateStep({
    * would clobber their custom name).
    */
   const [targetTableDirty, setTargetTableDirty] = useState(false)
+
+  // Load active connections for this tenant, filtered by platform
+  useEffect(() => {
+    if (!selectedTenantId) return
+    fetchCredentials(selectedTenantId)
+      .then((all) => {
+        const active = all.filter((c) => c.status === "active")
+        const filtered = platform
+          ? active.filter((c) => c.provider.toLowerCase() === platform.toLowerCase())
+          : active
+        setConnections(filtered)
+      })
+      .catch(() => setConnections([]))
+  }, [selectedTenantId, platform])
 
   const columnsKey = useMemo(() => [...columns].sort().join("|"), [columns])
   const loading = isProposing
@@ -120,6 +137,7 @@ export default function TemplateStep({
       columns: templateProposal.columns,
       ddl: templateProposal.ddl,
       targetTableOverride: override,
+      connectionId: selectedConnectionId || undefined,
     })
     setSaved(true)
   }, [
@@ -192,6 +210,9 @@ export default function TemplateStep({
             setTargetTable(v)
             setTargetTableDirty(true)
           }}
+          connections={connections}
+          selectedConnectionId={selectedConnectionId}
+          onConnectionChange={setSelectedConnectionId}
         />
       )}
     </div>
@@ -291,6 +312,9 @@ function TemplateContent({
   tenantId,
   targetTable,
   onTargetTableChange,
+  connections,
+  selectedConnectionId,
+  onConnectionChange,
 }: {
   proposal: TemplateProposal
   connectorName: string | null
@@ -304,6 +328,9 @@ function TemplateContent({
   tenantId: string
   targetTable: string
   onTargetTableChange: (v: string) => void
+  connections: BackendConnection[]
+  selectedConnectionId: string
+  onConnectionChange: (id: string) => void
 }) {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6">
@@ -315,6 +342,12 @@ function TemplateContent({
           <MetaRow label="Selected fields" value={String(columnsCount)} />
           {reportingLevel ? <MetaRow label="Reporting scope" value={reportingLevel} /> : null}
           <MetaRow label="Active client (tenant)" value={tenantId} />
+          <ConnectionRow
+            connections={connections}
+            value={selectedConnectionId}
+            onChange={onConnectionChange}
+            disabled={saved}
+          />
           <TargetTableRow value={targetTable} onChange={onTargetTableChange} disabled={saved} />
         </div>
 
@@ -363,6 +396,60 @@ function TemplateContent({
           </button>
         )}
       </div>
+    </div>
+  )
+}
+
+function ConnectionRow({
+  connections,
+  value,
+  onChange,
+  disabled,
+}: {
+  connections: BackendConnection[]
+  value: string
+  onChange: (id: string) => void
+  disabled: boolean
+}) {
+  return (
+    <div className="space-y-1.5">
+      <Label
+        htmlFor="connection-select"
+        className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider"
+      >
+        Credentials
+      </Label>
+      <select
+        id="connection-select"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        className="w-full border rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        <option value="">— None —</option>
+        {connections.map((c) => {
+          const label = decodeName(c.name).name || c.connection_id
+          return (
+            <option key={c.connection_id} value={c.connection_id}>
+              {label} ({c.connection_id})
+            </option>
+          )
+        })}
+      </select>
+      {connections.length === 0 && (
+        <p className="text-[11px] text-amber-600">
+          No active connections for this platform. Add one in{" "}
+          <a href="/credentials-library" className="underline">
+            Credentials library
+          </a>
+          .
+        </p>
+      )}
+      {connections.length > 0 && (
+        <p className="text-[11px] text-on-surface-variant">
+          The Cloud Function will read secrets using this connection ID.
+        </p>
+      )}
     </div>
   )
 }

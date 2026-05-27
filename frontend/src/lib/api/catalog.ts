@@ -26,11 +26,14 @@ export async function fetchManifest(id: string) {
 export async function runIngestion(
   manifestId: string,
   params: Record<string, unknown>,
-  tenantId?: string | null
+  tenantId?: string | null,
+  connectionId?: string | null
 ) {
   const trimmedTenant = tenantId?.trim() ? tenantId.trim() : undefined
+  const trimmedConnection = connectionId?.trim() ? connectionId.trim() : undefined
   const requestBody: Record<string, unknown> = { manifest_id: manifestId, params }
   if (trimmedTenant) requestBody.tenant_id = trimmedTenant
+  if (trimmedConnection) requestBody.connection_id = trimmedConnection
 
   const res = await fetch(`${API_BASE}/api/run`, {
     method: "POST",

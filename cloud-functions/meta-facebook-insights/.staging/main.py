@@ -110,6 +110,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re as _re
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -233,32 +234,82 @@ def _resolve_secret(secret_id: str, version: str = "latest") -> str:
     return response.payload.data.decode("utf-8")
 
 
-def _build_connector_context(tenant_id: str) -> dict[str, Any]:
-    """Pull the two Meta secrets for ``tenant_id`` and return a connector context.
+def _sanitize_secret_segment(value: str) -> str:
+    """Mirror src/credentials/secrets.py `_sanitize_segment` for secret name building."""
+    clean = _re.sub(r"[^A-Za-z0-9_-]+", "-", value.strip())
+    clean = clean.strip("-_")
+    return clean.lower() if clean else "x"
+
+
+def _build_connector_context(
+    tenant_id: str, connection_id: str | None = None
+) -> dict[str, Any]:
+    """Pull Meta secrets for ``tenant_id`` and return a connector context.
+
+    New format (``connection_id`` provided):
+        Reads a single JSON secret ``{tenant}-meta-{connection_id}`` — the
+        format produced by ``src/credentials/secrets.build_secret_id`` — and
+        extracts ``access_token`` and ``ad_account_id`` from the payload.
+
+    Legacy fallback (no ``connection_id``):
+        Reads two separate plain-string secrets:
+        ``client_{tenant}_meta_access_token`` and
+        ``client_{tenant}_meta_ad_account_id``.
 
     Returns:
         dict suitable for passing to ``facebook_ads.fetch`` as
         ``context``: ``{"ad_account_id": ..., "access_token": ...}``.
 
     Raises:
-        :class:`RuntimeError` if either secret is missing — the caller
-        translates that into an ERR response with code
-        ``MISSING_SECRET``.
+        :class:`RuntimeError` if secrets are missing or malformed.
     """
+    if connection_id:
+        t = _sanitize_secret_segment(tenant_id)
+        c = _sanitize_secret_segment(connection_id)
+        secret_id = f"{t}-meta-{c}"
+        try:
+            raw = _resolve_secret(secret_id).strip()
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"could not read secret '{secret_id}': {type(exc).__name__}: {exc}"
+            ) from exc
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"secret '{secret_id}' is not valid JSON: {exc}"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError(
+                f"secret '{secret_id}' must be a JSON object, got {type(payload).__name__}"
+            )
+        access_token = str(payload.get("access_token") or "").strip()
+        ad_account_id = str(payload.get("ad_account_id") or "").strip()
+        if not access_token:
+            raise RuntimeError(
+                f"secret '{secret_id}' is missing required field 'access_token'"
+            )
+        if not ad_account_id:
+            raise RuntimeError(
+                f"secret '{secret_id}' is missing required field 'ad_account_id'"
+            )
+        return {"ad_account_id": ad_account_id, "access_token": access_token}
+
+    # Legacy: two separate plain-string secrets
     base = f"client_{tenant_id}_meta"
     access_token_secret = f"{base}_access_token"
     ad_account_id_secret = f"{base}_ad_account_id"
 
     try:
         access_token = _resolve_secret(access_token_secret).strip()
-    except Exception as exc:  # noqa: BLE001 — wrap-and-tag
+    except Exception as exc:  # noqa: BLE001
         raise RuntimeError(
             f"could not read secret '{access_token_secret}': {type(exc).__name__}: {exc}"
         ) from exc
 
     try:
         ad_account_id = _resolve_secret(ad_account_id_secret).strip()
-    except Exception as exc:  # noqa: BLE001 — wrap-and-tag
+    except Exception as exc:  # noqa: BLE001
         raise RuntimeError(
             f"could not read secret '{ad_account_id_secret}': {type(exc).__name__}: {exc}"
         ) from exc
@@ -485,6 +536,7 @@ def run(request):  # noqa: C901 — handler is a sequence of guards; splitting h
 
     tenant_id = body.get("tenant_id")
     manifest_id = body.get("manifest_id")
+    connection_id = body.get("connection_id")  # new-format: selects the JSON secret
     params = body.get("params") or {}
     fields = body.get("fields")           # top-level, lifted by HTTPBackend
     target_table = body.get("target_table")
@@ -527,7 +579,7 @@ def run(request):  # noqa: C901 — handler is a sequence of guards; splitting h
 
     # ---- 2. Resolve secrets from SM (CF's own SA identity) ----
     try:
-        connector_context = _build_connector_context(tenant_id)
+        connector_context = _build_connector_context(tenant_id, connection_id=connection_id)
     except RuntimeError as exc:
         return _err(
             code="MISSING_SECRET",

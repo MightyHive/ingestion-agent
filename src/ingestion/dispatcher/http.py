@@ -74,6 +74,7 @@ caller's error-handling logic is uniform.
 from __future__ import annotations
 
 import os
+import subprocess
 import time
 from typing import Any
 from urllib.parse import urlparse
@@ -224,24 +225,22 @@ def _is_loopback(url: str) -> bool:
 def _fetch_id_token(audience: str) -> str:
     """Get an OIDC id_token whose ``aud`` claim equals ``audience``.
 
-    Supports three credential types found in practice:
-    - ImpersonatedCredentials (gcloud auth application-default login
-      --impersonate-service-account=...) — uses IDTokenCredentials.
-    - ServiceAccountCredentials (GOOGLE_APPLICATION_CREDENTIALS key file)
-      — uses id_token.fetch_id_token.
-    - ComputeEngine/CloudRun metadata server — uses id_token.fetch_id_token.
-
-    Imported lazily so the optional ``google-auth`` dependency is only
-    required when actually calling a real CF.
+    Resolution order:
+    1. ImpersonatedCredentials (ADC with --impersonate-service-account)
+       — uses IDTokenCredentials.
+    2. ServiceAccountCredentials (GOOGLE_APPLICATION_CREDENTIALS key file)
+       or GCE/CloudRun metadata server — uses id_token.fetch_id_token.
+    3. gcloud CLI fallback: ``gcloud auth print-identity-token``
+       — works with regular user credentials (gcloud auth login /
+       application-default login) on developer laptops where the Python
+       SDK cannot exchange user tokens for id_tokens directly.
     """
     import google.auth  # type: ignore
     from google.auth.transport.requests import Request  # type: ignore
 
     credentials, _ = google.auth.default()
 
-    # ImpersonatedCredentials (ADC with --impersonate-service-account) cannot
-    # use id_token.fetch_id_token — that function only handles service account
-    # key files and the GCE metadata server. Use IDTokenCredentials instead.
+    # Path 1 — ImpersonatedCredentials
     try:
         from google.auth.impersonated_credentials import (  # type: ignore
             Credentials as _ImpersonatedCreds,
@@ -256,8 +255,48 @@ def _fetch_id_token(audience: str) -> str:
     except ImportError:
         pass
 
-    from google.oauth2 import id_token  # type: ignore
-    return id_token.fetch_id_token(Request(), audience)
+    # Path 2 — service account key file or metadata server
+    try:
+        from google.oauth2 import id_token  # type: ignore
+        return id_token.fetch_id_token(Request(), audience)
+    except Exception:  # noqa: BLE001 — fall through to gcloud CLI
+        pass
+
+    # Path 3 — gcloud CLI with SA impersonation (developer laptops).
+    # ``gcloud auth print-identity-token --audiences=URL`` requires a service
+    # account; user credentials can't set a custom audience directly.
+    # The workaround is to impersonate a SA that has cloudfunctions.invoker,
+    # controlled by the ``MDS_CF_INVOKER_SA`` env var.
+    invoker_sa = os.environ.get("MDS_CF_INVOKER_SA", "").strip()
+    if invoker_sa:
+        try:
+            result = subprocess.run(
+                [
+                    "gcloud", "auth", "print-identity-token",
+                    f"--impersonate-service-account={invoker_sa}",
+                    f"--audiences={audience}",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            token = result.stdout.strip()
+            if token:
+                return token
+        except subprocess.CalledProcessError as exc:
+            raise BackendError(
+                f"connector_auth_unavailable: could not fetch id_token for "
+                f"audience '{audience}' via gcloud impersonation of '{invoker_sa}': "
+                f"{exc.stderr.strip()}. "
+                f"Make sure your account has roles/iam.serviceAccountTokenCreator on that SA."
+            ) from exc
+
+    raise BackendError(
+        f"connector_auth_unavailable: could not obtain an id_token for "
+        f"audience '{audience}'. "
+        f"Set MDS_CF_INVOKER_SA=<sa-email> in .env to use gcloud SA impersonation, "
+        f"or set GOOGLE_APPLICATION_CREDENTIALS to a service account key file."
+    )
 
 
 def _build_payload(
@@ -273,15 +312,15 @@ def _build_payload(
     Manager using its own SA identity. The regression test
     ``test_payload_never_contains_secrets`` enforces this.
     """
-    # ``fields`` and ``target_table`` are first-class keys at the top
-    # level so the CF can read them without reaching into ``params``.
-    # Everything else the user passed goes through verbatim (after the
-    # secret-scrubber, which is defence-in-depth — params should never
-    # contain secrets to begin with because they come from the request
-    # body, not from Secret Manager).
+    # ``fields``, ``target_table``, and ``connection_id`` are first-class
+    # keys at the top level so the CF can read them without reaching into
+    # ``params``. Everything else goes through verbatim (after the
+    # secret-scrubber — defence-in-depth, params should never contain
+    # secrets because they come from the request body, not Secret Manager).
     safe_params = _scrub_secret_keys(params)
     fields = safe_params.pop("fields", None)
     target_table = safe_params.pop("target_table", None)
+    connection_id = safe_params.pop("connection_id", None)
 
     payload: dict[str, Any] = {
         "tenant_id": tenant.tenant_id,
@@ -293,6 +332,8 @@ def _build_payload(
         payload["fields"] = fields
     if target_table is not None:
         payload["target_table"] = target_table
+    if connection_id is not None:
+        payload["connection_id"] = connection_id
     return payload
 
 

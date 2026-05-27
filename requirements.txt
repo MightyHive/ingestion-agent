@@ -31,3 +31,13 @@ httpx>=0.27
 # audience is the CF URL. Skipped when MDS_CF_BASE_URL points at
 # localhost (functions-framework emulator / smoke tests).
 google-auth>=2.30
+
+# --- Env file loading
+python-dotenv>=1.0
+
+# --- Credentials module (Phase 5)
+# SQLAlchemy for metadata persistence (connections table).
+sqlalchemy>=2.0
+# GCP Secret Manager for token storage in production.
+# Set MDS_SECRETS_BACKEND=gcp to use it; defaults to local file backend.
+# google-cloud-secretmanager>=2.20

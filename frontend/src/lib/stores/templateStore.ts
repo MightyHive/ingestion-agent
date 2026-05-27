@@ -19,6 +19,12 @@ export interface SavedTemplate {
    * `bronze_pattern` substitution entirely.
    */
   targetTableOverride?: string
+  /**
+   * ID of the credentials connection to use when running this template.
+   * Maps to a row in the credentials DB; the backend forwards it to the
+   * Cloud Function so it can resolve the correct Secret Manager secret.
+   */
+  connectionId?: string
 }
 
 interface TemplateStore {

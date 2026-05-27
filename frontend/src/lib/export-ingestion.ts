@@ -119,7 +119,7 @@ export async function runTemplateIngestion(
   if (override) params.target_table = override
 
   const tenantId = getActiveTenantId()
-  const body = await runIngestion(manifestId, params, tenantId)
+  const body = await runIngestion(manifestId, params, tenantId, template.connectionId)
 
   const errors = Array.isArray(body.errors) ? (body.errors as string[]) : []
   return {

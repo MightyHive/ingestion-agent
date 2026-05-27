@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { Button, buttonVariants } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -18,6 +18,8 @@ import { runTemplateIngestion, type TemplateRunResult } from "@/lib/export-inges
 import { formatScheduleSummary, type ExportSchedule } from "@/lib/export-schedule"
 import { useExportJobStore, type ExportJob, type ExportRunRecord } from "@/lib/stores/exportJobStore"
 import { useTemplateStore } from "@/lib/stores/templateStore"
+import { fetchCredentials, decodeName, type BackendConnection } from "@/lib/api/credentials"
+import { useTenantStore } from "@/lib/stores/tenantStore"
 
 const FREQUENCIES = ["hourly", "daily", "weekly", "monthly"]
 
@@ -59,7 +61,9 @@ function runsForJob(job: ExportJob): Array<{
 
 export default function ExportPlannerPage() {
   const { jobs, deleteJob, updateJob, appendRun } = useExportJobStore()
-  const { templates } = useTemplateStore()
+  const { templates, updateTemplate } = useTemplateStore()
+  const selectedTenantId = useTenantStore((s) => s.selectedTenantId)
+  const [allConnections, setAllConnections] = useState<BackendConnection[]>([])
 
   const [runningId, setRunningId] = useState<string | null>(null)
   const [actionNote, setActionNote] = useState<ActionNote | null>(null)
@@ -77,6 +81,7 @@ export default function ExportPlannerPage() {
   const [editFreq, setEditFreq] = useState("")
   const [editTime, setEditTime] = useState("")
   const [editRefreshWindow, setEditRefreshWindow] = useState<number>(1)
+  const [editConnectionId, setEditConnectionId] = useState<string>("")
   const [editSchedule, setEditSchedule] = useState<ExportSchedule>({
     frequency: "daily",
     time: "00:00",
@@ -88,6 +93,13 @@ export default function ExportPlannerPage() {
 
   // Last runs expanded per job
   const [expandedJobs, setExpandedJobs] = useState<Set<string>>(new Set())
+
+  useEffect(() => {
+    if (!selectedTenantId) return
+    fetchCredentials(selectedTenantId)
+      .then((all) => setAllConnections(all.filter((c) => c.status === "active")))
+      .catch(() => setAllConnections([]))
+  }, [selectedTenantId])
 
   const sorted = useMemo(
     () => [...jobs].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
@@ -233,6 +245,7 @@ export default function ExportPlannerPage() {
     setEditRefreshWindow(
       job.refreshWindowDays ?? platformRefreshDefault(tmpl?.platform ?? "", tmpl?.tableName ?? "")
     )
+    setEditConnectionId(tmpl?.connectionId ?? "")
   }
 
   function closeEdit() { setEditFor(null) }
@@ -249,6 +262,13 @@ export default function ExportPlannerPage() {
       schedule,
       refreshWindowDays: editRefreshWindow,
     })
+    // Persist connection change on the template itself
+    const tmpl = getTemplate(editFor.templateId)
+    if (tmpl) {
+      updateTemplate(editFor.templateId, {
+        connectionId: editConnectionId || undefined,
+      })
+    }
     setActionNote({
       kind: "success",
       message: `${formatScheduleSummary(schedule)} · ${editRefreshWindow}d refresh window`,
@@ -345,6 +365,16 @@ export default function ExportPlannerPage() {
                       <div className="text-xs text-muted-foreground mt-0.5">
                         Refresh window: {refreshDays} {refreshDays === 1 ? "day" : "days"}
                       </div>
+                      {tmpl?.connectionId && (() => {
+                        const conn = allConnections.find((c) => c.connection_id === tmpl.connectionId)
+                        const label = conn ? (decodeName(conn.name).name || conn.connection_id) : tmpl.connectionId
+                        return (
+                          <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1">
+                            <span className="material-symbols-outlined text-[13px]">vpn_key</span>
+                            {label}
+                          </div>
+                        )
+                      })()}
                     </div>
                     {platform && (
                       <span className="shrink-0 text-[11px] font-semibold tracking-wider border rounded-full px-2.5 py-0.5 text-muted-foreground uppercase">
@@ -563,6 +593,34 @@ export default function ExportPlannerPage() {
                     value={editRefreshWindow}
                     onChange={(e) => setEditRefreshWindow(Math.max(1, parseInt(e.target.value) || 1))}
                   />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-muted-foreground">Credentials</label>
+                  <select
+                    className="w-full border rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-ring"
+                    value={editConnectionId}
+                    onChange={(e) => setEditConnectionId(e.target.value)}
+                  >
+                    <option value="">— None —</option>
+                    {(() => {
+                      const tmpl = getTemplate(editFor!.templateId)
+                      const platform = tmpl?.platform ?? ""
+                      const filtered = platform
+                        ? allConnections.filter((c) => c.provider.toLowerCase() === platform.toLowerCase())
+                        : allConnections
+                      return filtered.map((c) => {
+                        const label = decodeName(c.name).name || c.connection_id
+                        return (
+                          <option key={c.connection_id} value={c.connection_id}>
+                            {label} ({c.connection_id})
+                          </option>
+                        )
+                      })
+                    })()}
+                  </select>
+                  <p className="text-[11px] text-muted-foreground">
+                    The Cloud Function will use this connection to read secrets from Secret Manager.
+                  </p>
                 </div>
               </div>
               <DialogFooter>

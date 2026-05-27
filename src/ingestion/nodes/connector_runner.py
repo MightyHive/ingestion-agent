@@ -164,11 +164,15 @@ def node(state: dict[str, Any]) -> dict[str, Any]:
 
     params = state.get("normalised_params") or {}
     # target_table is resolved by data_architect and stored separately in
-    # state; inject it into params so HTTPBackend forwards it to the CF
-    # (which only writes to BQ when target_table is present in the payload).
+    # state; inject it into params so HTTPBackend forwards it to the CF.
     target_table = state.get("target_table")
     if target_table and "target_table" not in params:
         params = {**params, "target_table": target_table}
+    # connection_id is a top-level request field (not a manifest param);
+    # inject it here so _build_payload can lift it to the CF payload top-level.
+    connection_id = state.get("connection_id")
+    if connection_id and "connection_id" not in params:
+        params = {**params, "connection_id": connection_id}
     tenant_id = state.get("tenant_id", "")
     lol = run(manifest, params, tenant_id)
 

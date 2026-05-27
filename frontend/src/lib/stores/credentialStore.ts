@@ -17,6 +17,7 @@ interface CredentialStore {
     addCredential: (credential: Credential) => void
     updateCredential: (id:string, credential: Credential) => void
     deleteCredential: (id:string) => void
+    setCredentials: (credentials: Credential[]) => void
 }
 
 const DEFAULT_CREDENTIAL: Credential = {
@@ -34,7 +35,9 @@ export const useCredentialStore = create<CredentialStore>()(persist((set) => ({
     addCredential: (credential) => set((state) => ({credentials: [...state.credentials, credential]})),
     updateCredential: (id, credential) => set((state) => ({credentials: [...state.credentials.map(c => c.id === id ? credential : c)]})),
     deleteCredential: (id) => set((state) => ({credentials: state.credentials.filter(c => c.id !== id)})),
+    setCredentials: (credentials) => set({ credentials }),
 }), {
     name: "credentials-storage",
     storage: createJSONStorage(() => localStorage),
+    skipHydration: true,
 }))

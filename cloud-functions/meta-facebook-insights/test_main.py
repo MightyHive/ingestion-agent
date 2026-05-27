@@ -85,6 +85,7 @@ def _base_body(**overrides):
         "tenant_id": "cliente1",
         "manifest_id": "meta_facebook_ad_insights",
         "manifest_version": "0.1.0",
+        "connection_id": "test-conn-1",
         "params": {"date_preset": "last_7d"},
     }
     body.update(overrides)
@@ -112,12 +113,16 @@ def gcp_project_env(monkeypatch):
 
 @pytest.fixture
 def good_secrets(monkeypatch):
-    """Pretend SM returns a Meta access_token and ad_account_id."""
+    """Pretend SM returns the new unified JSON secret for cliente1/test-conn-1."""
 
     def _fake_resolve(secret_id, version="latest"):
-        if secret_id.endswith("access_token"):
+        # New format: single JSON secret named {tenant}-meta-{connection_id}
+        if secret_id == "cliente1-meta-test-conn-1":
+            return '{"access_token":"EAA-fake-token-1234567890","ad_account_id":"act_1234567890"}'
+        # Legacy fallback (two plain-string secrets)
+        if secret_id.endswith("_access_token"):
             return "EAA-fake-token-1234567890"
-        if secret_id.endswith("ad_account_id"):
+        if secret_id.endswith("_ad_account_id"):
             return "act_1234567890"
         raise RuntimeError(f"unexpected secret_id={secret_id}")
 
@@ -173,29 +178,44 @@ def test_run_returns_missing_secret_when_sm_fails(gcp_project_env, monkeypatch):
     body, status = cf_main.run(_FakeRequest(_base_body()))
     assert status == 500
     assert body["code"] == "MISSING_SECRET"
-    assert "access_token" in body["errors"][0]
+    assert "cliente1-meta-test-conn-1" in body["errors"][0]
 
 
 def test_build_connector_context_returns_access_token_and_account(gcp_project_env, good_secrets):
-    ctx = cf_main._build_connector_context("cliente1")
+    ctx = cf_main._build_connector_context("cliente1", connection_id="test-conn-1")
     assert ctx["access_token"] == "EAA-fake-token-1234567890"
     assert ctx["ad_account_id"] == "act_1234567890"
 
 
 def test_secrets_named_by_tenant_id(gcp_project_env, monkeypatch):
-    """tenant_id 'cliente1' must produce client_cliente1_meta_{access_token,ad_account_id}."""
+    """connection_id 'test-conn-1' + tenant 'cliente1' -> 'cliente1-meta-test-conn-1'."""
     seen = []
 
     def _fake_resolve(secret_id, version="latest"):
         seen.append(secret_id)
-        return "x" if secret_id.endswith("access_token") else "act_y"
+        return '{"access_token":"x","ad_account_id":"act_y"}'
 
     monkeypatch.setattr(cf_main, "_resolve_secret", _fake_resolve)
-    cf_main._build_connector_context("cliente1")
+    cf_main._build_connector_context("cliente1", connection_id="test-conn-1")
+    assert seen == ["cliente1-meta-test-conn-1"]
+
+
+def test_build_connector_context_legacy_fallback(gcp_project_env, monkeypatch):
+    """Without connection_id, falls back to two separate plain-string secrets."""
+    seen = []
+
+    def _fake_resolve(secret_id, version="latest"):
+        seen.append(secret_id)
+        return "x" if secret_id.endswith("_access_token") else "act_y"
+
+    monkeypatch.setattr(cf_main, "_resolve_secret", _fake_resolve)
+    ctx = cf_main._build_connector_context("cliente1")
     assert seen == [
         "client_cliente1_meta_access_token",
         "client_cliente1_meta_ad_account_id",
     ]
+    assert ctx["access_token"] == "x"
+    assert ctx["ad_account_id"] == "act_y"
 
 
 # =========================================================================

@@ -105,6 +105,7 @@ class IngestionState(TypedDict, total=False):
     manifest_id: str
     params: dict[str, Any]
     tenant_id: str
+    connection_id: Optional[str]
 
     # Intermediate (filled by nodes)
     manifest: Optional[dict[str, Any]]
