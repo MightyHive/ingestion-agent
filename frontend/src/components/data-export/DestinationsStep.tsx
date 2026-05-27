@@ -109,7 +109,7 @@ export default function DestinationsStep(props: DestinationsStepProps) {
   return (
     <div className="space-y-6 max-w-[1200px]">
       <div>
-        <h1 className="text-2xl font-semibold text-on-surface">Destinations</h1>
+        <h2 className="text-2xl font-semibold text-on-surface">Destinations</h2>
         <p className="text-sm text-on-surface-variant mt-0.5">
           Select the GCP project where data will be loaded, then choose BigQuery or Cloud Storage as the load target.
         </p>

@@ -37,7 +37,7 @@ export default function ConnectionStep({ data, onUpdate }: any) {
   return (
     <div className="space-y-6 max-w-[1200px]">
       <div>
-        <h1 className="text-2xl font-semibold text-on-surface">Connectors</h1>
+        <h2 className="text-2xl font-semibold text-on-surface">Connectors</h2>
         <p className="text-sm text-on-surface-variant mt-0.5">
           Choose your platform. The agents will investigate the API and return the full field catalog available.
         </p>

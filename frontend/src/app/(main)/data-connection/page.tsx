@@ -1,5 +1,5 @@
 "use client"
-import { useCallback, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
 import ConnectionStep from "@/components/data-connection/ConnectionStep"
 import SelectionStep from "@/components/data-connection/SelectionStep"
@@ -68,8 +68,25 @@ export default function DataConnectionPage() {
     { n: 3, label: "Template", canEnter: step2Completed },
   ] as const
 
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    if (window.location.hash === "#templates") {
+      setStep(1)
+      requestAnimationFrame(() => {
+        document.getElementById("templates")?.scrollIntoView({ behavior: "smooth", block: "start" })
+      })
+    }
+  }, [])
+
   return (
     <div className="space-y-8 p-6">
+      <div>
+        <h1 className="text-2xl font-bold">Data Exploration</h1>
+        <p className="text-sm text-muted-foreground mt-1">
+          Connect platforms, select fields, and save extraction templates.
+        </p>
+      </div>
+
       <div className="flex gap-4 mb-8 items-center">
         {STEPS.map(({ n, label, canEnter }) => (
           <div
@@ -125,9 +142,11 @@ export default function DataConnectionPage() {
         )}
       </div>
 
-      <section className="rounded-xl border border-border bg-slate-50/50 p-6">
-        <TemplatesLibraryPanel />
-      </section>
+      {step === 1 && (
+        <section className="rounded-xl border border-border bg-slate-50/50 p-6">
+          <TemplatesLibraryPanel />
+        </section>
+      )}
     </div>
   )
 }

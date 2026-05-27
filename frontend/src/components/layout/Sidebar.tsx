@@ -4,12 +4,13 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 
 const navItems = [
-  { href: "/",           icon: "dashboard",      label: "Dashboard" },
-  { href: "/credentials-library", icon: "key", label: "Credentials Library"},
-  { href: "/destination-library", icon: "home_storage", label: "Destination Library"},
-  { href: "/data-connection", icon: "ads_click",             label: "Data Connection" },
-  { href: "/data-export",  icon: "system_update_alt",       label: "Data Export" },
-  { href: "/export-planner",     icon: "schedule_send",          label: "Export Planner" },
+  { href: "/",                    icon: "dashboard",         label: "Dashboard" },
+  { href: "/credentials-library", icon: "key",               label: "Platform Credentials" },
+  { href: "/data-connection",     icon: "explore",           label: "Data Exploration" },
+  { href: "/destination-library", icon: "home_storage",      label: "Data Destinations" },
+  { href: "/export-planner",      icon: "schedule_send",     label: "Export Scheduler" },
+  { href: "/data-export",         icon: "monitoring",        label: "Export Monitoring" },
+  { href: "/logs",                icon: "list_alt",          label: "Logs" },
 ]
 
 export default function Sidebar() {

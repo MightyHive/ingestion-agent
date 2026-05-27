@@ -77,6 +77,13 @@ export default function DataExportPage() {
 
   return (
     <div className="space-y-8 p-6">
+      <div>
+        <h1 className="text-2xl font-bold">Export Monitoring</h1>
+        <p className="text-sm text-muted-foreground mt-1">
+          Configure destinations, extractions, and export schedules.
+        </p>
+      </div>
+
       <div className="flex gap-4 mb-8 items-center">
         {STEPS.map(({ n, label, canEnter }) => (
           <div

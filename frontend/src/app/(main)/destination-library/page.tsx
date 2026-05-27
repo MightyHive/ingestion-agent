@@ -41,7 +41,7 @@ export default function DestinationLibraryPage() {
     <div className="space-y-6 max-w-[1400px] p-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Destination Library</h1>
+          <h1 className="text-2xl font-bold">Data Destinations</h1>
           <p className="text-sm text-muted-foreground">
             GCP projects available as destinations. Connections are saved in the browser.
           </p>

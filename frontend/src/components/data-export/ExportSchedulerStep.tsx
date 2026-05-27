@@ -78,7 +78,7 @@ export default function ExportSchedulerStep({ data, onUpdate }: Props) {
   return (
     <div className="space-y-6 max-w-[800px]">
       <div>
-        <h1 className="text-2xl font-semibold text-on-surface">Schedule Export</h1>
+        <h2 className="text-2xl font-semibold text-on-surface">Schedule Export</h2>
         <p className="text-sm text-on-surface-variant mt-0.5">
           Configure how often this extraction runs.
         </p>

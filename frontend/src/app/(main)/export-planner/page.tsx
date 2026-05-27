@@ -164,7 +164,7 @@ export default function ExportPlannerPage() {
     <div className="space-y-8 p-6 max-w-[1200px]">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Export planner</h1>
+          <h1 className="text-2xl font-bold">Export Scheduler</h1>
           <p className="text-sm text-muted-foreground mt-1 max-w-lg">
             Manage your scheduled exports — trigger on-demand runs, backfill historical data, or edit an existing schedule.
           </p>
@@ -191,7 +191,7 @@ export default function ExportPlannerPage() {
           <p className="text-sm text-muted-foreground border rounded-xl p-6 bg-white">
             No exports yet. Use{" "}
             <Link className="text-primary underline" href="/data-export">
-              Data Export
+              Export Monitoring
             </Link>{" "}
             to create one; it will appear here.
           </p>

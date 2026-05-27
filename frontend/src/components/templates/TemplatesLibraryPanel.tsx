@@ -163,7 +163,7 @@ export default function TemplatesLibraryPanel() {
             className="inline-flex h-10 items-center justify-center rounded-md border border-border bg-white px-4 text-sm font-medium text-on-surface transition-colors hover:bg-muted"
           >
             <span className="material-symbols-outlined mr-2 text-[20px]">schedule_send</span>
-            Export planner
+            Export Scheduler
           </Link>
           <Link
             href="/data-connection#templates"

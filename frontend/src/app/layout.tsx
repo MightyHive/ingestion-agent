@@ -1,38 +1,45 @@
-import type { Metadata } from "next"
-import { Inter } from "next/font/google"
-import { getServerSession } from "next-auth/next"
-import "./globals.css"
-import { AuthProvider } from "@/components/providers/AuthProvider"
-import { authOptions } from "@/lib/auth"
+import type { Metadata } from "next";
+import { Inter } from "next/font/google";
+import "./globals.css";
+import Header from "@/components/layout/Header";
+import MainContent from "@/components/layout/MainContent";
+import Sidebar from "@/components/layout/Sidebar";
 
 const inter = Inter({
   variable: "--font-inter",
   subsets: ["latin"],
-})
+});
+
 
 export const metadata: Metadata = {
-  title: "Media Data Studio",
+  title: "Meta Data Studio",
   description: "Enterprise orchestration layer for media extraction and AI readiness.",
-}
+};
 
-export default async function RootLayout({
+export default function RootLayout({
   children,
 }: Readonly<{
-  children: React.ReactNode
+  children: React.ReactNode;
 }>) {
-  const session = await getServerSession(authOptions)
-
   return (
-    <html lang="en" className={`${inter.variable} h-full antialiased`}>
+    <html
+      lang="en"
+      className={`${inter.variable} h-full antialiased`}
+    >
       <head>
-        <link
-          href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
-          rel="stylesheet"
-        />
+      <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
       </head>
-      <body className="min-h-full font-sans">
-        <AuthProvider session={session}>{children}</AuthProvider>
+      <body className="min-h-full">
+        <Header />
+        <div className="flex">
+          <Sidebar />
+          <main className="ml-64 mt-16 flex-1 p-8">
+            <MainContent>{children}</MainContent>
+          </main>
+        </div>
       </body>
     </html>
-  )
+  );
 }
+
+

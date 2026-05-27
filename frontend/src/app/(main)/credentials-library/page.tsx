@@ -4,11 +4,13 @@ import { useState, useMemo } from "react"
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog"
+import CredentialDrawer, { type CredentialFormData } from "@/components/credentials/CredentialDrawer"
+import PlatformLogo from "@/components/platforms/PlatformLogo"
 import { generateCredentialId } from "@/lib/generateCredentialId"
-import {cn} from "@/lib/utils"
+import { getCredentialPlatformLabel } from "@/lib/platforms/credential-platforms"
+import { cn } from "@/lib/utils"
 import { useCredentialStore } from "@/lib/stores/credentialStore"
+
 type CredentialPlatformFilter = "all" | "META" | "TIKTOK" | "YOUTUBE" | "CM360" | "DV360" | "GOOGLE_ADS"
 
 const PLATFORM_CHIPS: { id: CredentialPlatformFilter; label: string }[] = [
@@ -21,12 +23,21 @@ const PLATFORM_CHIPS: { id: CredentialPlatformFilter; label: string }[] = [
   { id: "GOOGLE_ADS", label: "Google Ads" },
 ]
 
+const EMPTY_FORM: CredentialFormData = {
+  name: "",
+  platform: "META",
+  market: "",
+  brand: "",
+  token: "",
+}
+
 export default function CredentialsPage() {
-  const [isModalOpen, setIsModalOpen] = useState(false)
-  const [editingId, setEditingId] = useState<string | null>(null) // Para saber si estamos editando
-  const { credentials, addCredential, updateCredential, deleteCredential} = useCredentialStore()
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const { credentials, addCredential, updateCredential, deleteCredential } = useCredentialStore()
   const [searchQuery, setSearchQuery] = useState("")
   const [platformFilter, setPlatformFilter] = useState<CredentialPlatformFilter>("all")
+  const [formData, setFormData] = useState<CredentialFormData>(EMPTY_FORM)
 
   const filteredCredentials = useMemo(() => {
     const q = searchQuery.trim().toLowerCase()
@@ -37,190 +48,99 @@ export default function CredentialsPage() {
         c.name.toLowerCase().includes(q) ||
         c.id.toLowerCase().includes(q) ||
         c.platform.toLowerCase().includes(q) ||
+        getCredentialPlatformLabel(c.platform).toLowerCase().includes(q) ||
         c.market.toLowerCase().includes(q) ||
         c.brand.toLowerCase().includes(q)
       )
     })
   }, [credentials, searchQuery, platformFilter])
 
-
-  // 2. Estado para capturar los datos del formulario
-  const [formData, setFormData] = useState({
-    name: "",
-    platform: "META",
-    market: "",
-    brand: "",
-    token: ""
-  })
-
-  const TOKEN_DOC_URLS = {
-    META: "https://developers.facebook.com/documentation/facebook-login/guides/access-tokens",
-    TIKTOK: "https://developers.tiktok.com/doc/login-kit-manage-user-access-tokens/",
-    YOUTUBE: "https://developers.google.com/youtube/registering_an_application",
-    CM360: "https://developers.google.com/doubleclick-advertisers/getting_started",
-    DV360: "https://developers.google.com/display-video/api/guides/quickstart/generate-credentials",
-    GOOGLE_ADS: "https://developers.google.com/google-ads/api/docs/get-started/make-first-call"
+  const openCreateDrawer = () => {
+    setEditingId(null)
+    setFormData(EMPTY_FORM)
+    setDrawerOpen(true)
   }
 
-// Función para abrir modal en modo "Crear"
-const openCreateModal = () => {
-  setEditingId(null)
-  setFormData({ name: "", platform: "META", market: "", brand: "", token: "" })
-  setIsModalOpen(true)
-}
+  const openEditDrawer = (conn: (typeof credentials)[0]) => {
+    setEditingId(conn.id)
+    setFormData({
+      name: conn.name,
+      platform: conn.platform as CredentialFormData["platform"],
+      market: conn.market,
+      brand: conn.brand,
+      token: conn.token || "",
+    })
+    setDrawerOpen(true)
+  }
 
-// Función para abrir modal en modo "Editar"
-const openEditModal = (conn: any) => {
-  setEditingId(conn.id)
-  setFormData({
-    name: conn.name,
-    platform: conn.platform,
-    market: conn.market,
-    brand: conn.brand,
-    token: conn.token || ""
-  })
-  setIsModalOpen(true)
-}
+  const closeDrawer = () => setDrawerOpen(false)
 
-    // Guardar (Crear o Editar)
-    const handleSave = () => {
-      const entry = {
-        ...formData,
-        id: editingId || generateCredentialId(formData.platform, formData.brand, formData.market),
-        status: "Healthy",
-        owner: "You (Admin)"
+  const handleSave = () => {
+    const entry = {
+      ...formData,
+      id: editingId || generateCredentialId(formData.platform, formData.brand, formData.market),
+      status: "Healthy",
+      owner: "You (Admin)",
+    }
+    if (editingId) {
+      updateCredential(editingId, entry)
+    } else {
+      addCredential(entry)
+    }
+    setDrawerOpen(false)
+  }
+
+  const handleDelete = (id: string) => {
+    if (confirm("Are you sure you want to delete this connection?")) {
+      deleteCredential(id)
+      setDrawerOpen(false)
+    }
+  }
+
+  const handleTest = (id: string) => {
+    const currentCred = credentials.find((c) => c.id === id)
+    if (!currentCred) return
+
+    updateCredential(id, { ...currentCred, status: "Testing..." })
+
+    setTimeout(() => {
+      const updatedCred = credentials.find((c) => c.id === id)
+      if (updatedCred) {
+        updateCredential(id, { ...updatedCred, status: "Healthy" })
       }
-      if (editingId) {
-        updateCredential(editingId, entry)}
-        else { addCredential(entry)}
-      setIsModalOpen(false)
-    }
-
-    // Eliminar
-    const handleDelete = (id: string) => {
-      if (confirm("Are you sure you want to delete this connection?")) {
-        deleteCredential(id)
-      }
-    }
-    // Simulación TEST API
-    const handleTest = (id: string) => {
-      // 1. Buscamos la credencial actual en el Store
-      const currentCred = credentials.find(c => c.id === id)
-      if (!currentCred) return
-    
-      // 2. Cambiamos estado a "Testing..." usando la función del Store
-      updateCredential(id, { ...currentCred, status: "Testing..." })
-    
-      // 3. Simulamos delay de red (2 segundos)
-      setTimeout(() => {
-        const updatedCred = credentials.find(c => c.id === id)
-        if (updatedCred) {
-          updateCredential(id, { ...updatedCred, status: "Healthy" })
-        }
-      }, 2000)
-    }
+    }, 2000)
+  }
 
   return (
     <div className="space-y-6 max-w-[1400px] p-6">
-      {/* Header */}
-      <div className="flex justify-between items-center">
+      <div className="flex justify-between items-center pr-12">
         <div>
-          <h1 className="text-2xl font-bold">Credentials Library</h1>
-          <p className="text-sm text-muted-foreground">Manage source authentication and build reusable Connections.</p>
+          <h1 className="text-2xl font-bold">Platform Credentials</h1>
+          <p className="text-sm text-muted-foreground">
+            Manage source authentication and build reusable connections.
+          </p>
         </div>
 
-        <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
-          <DialogTrigger>
-            <div className="inline-flex items-center justify-center bg-[#5c27fe] hover:bg-[#4b1fd1] text-white h-10 px-4 py-2 rounded-md cursor-pointer transition-colors font-medium">
-              <span className="material-symbols-outlined mr-2 text-[20px]">add</span>
-              Add Connection
-            </div>
-          </DialogTrigger>
-
-          <DialogContent className="bg-white sm:max-w-[425px]">
-            <DialogHeader>
-              <DialogTitle className="text-xl font-bold">Add New Credential</DialogTitle>
-            </DialogHeader>
-            
-            <div className="grid gap-4 py-4">
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold text-gray-500 uppercase">Connection Name</label>
-                <Input 
-                  placeholder="e.g. Meta France Cadillac" 
-                  value={formData.name}
-                  onChange={(e) => setFormData({...formData, name: e.target.value})}
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-gray-500 uppercase">Platform</label>
-                  <select 
-                    className="w-full p-2 border rounded-md bg-white text-sm"
-                    value={formData.platform}
-                    onChange={(e) => setFormData({...formData, platform: e.target.value})}
-                  >
-                    <option value="META">Meta</option>
-                    <option value="TIKTOK">TikTok</option>
-                    <option value="YOUTUBE">YouTube</option>
-                    <option value="CM360">CM360</option>
-                    <option value="GOOGLE_ADS">Google Ads</option>
-                    <option value="DV360">DV360</option>
-                  </select>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-gray-500 uppercase">Market</label>
-                  <Input 
-                    placeholder="e.g. France" 
-                    value={formData.market}
-                    onChange={(e) => setFormData({...formData, market: e.target.value})}
-                  />
-                </div>
-              </div>
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold text-gray-500 uppercase">Brand</label>
-                <Input 
-                  placeholder="e.g. Cadillac" 
-                  value={formData.brand}
-                  onChange={(e) => setFormData({...formData, brand: e.target.value})}
-                />
-              </div>
-              <div className="flex flex-col">
-                <label>Access Token</label>
-                <Input 
-                  type="password" 
-                  placeholder="••••••••••••" 
-                  value={formData.token}
-                  onChange={(e) => setFormData({...formData, token: e.target.value})}
-                />
-                <span> <a href={TOKEN_DOC_URLS[formData.platform as keyof typeof TOKEN_DOC_URLS]} target="_blank" rel="noopener noreferrer" className="text-[12px] text-blue-500 hover:underline">
-                   Need help? View Documentation</a></span>
-              </div>
-              
-              {/* Preview del ID que se va a generar */}
-              <div className="p-3 bg-slate-50 rounded-lg border border-dashed border-slate-200">
-                <p className="text-[9px] font-bold text-slate-400 uppercase mb-1">Generated ID Preview</p>
-                <code className="text-xs font-mono text-purple-600">
-                  {formData.brand && formData.market ? generateCredentialId(formData.platform, formData.brand, formData.market) : "waiting for data..."}
-                </code>
-              </div>
-            </div>
-
-            <DialogFooter className="gap-2">
-              {editingId && (
-                <Button variant="destructive" className="mr-auto" onClick={() => { handleDelete(editingId); setIsModalOpen(false); }}>
-                  Delete
-                </Button>
-              )}
-              <Button variant="outline" onClick={() => setIsModalOpen(false)}>Cancel</Button>
-              <Button className="bg-[#5c27fe] text-white" onClick={handleSave}>
-                {editingId ? "Update" : "Save Connection"}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+        <Button
+          type="button"
+          className="bg-[#5c27fe] hover:bg-[#4b1fd1] text-white"
+          onClick={openCreateDrawer}
+        >
+          <span className="material-symbols-outlined mr-2 text-[20px]">add</span>
+          Add connection
+        </Button>
       </div>
 
-      {/* Stats Cards - Ahora dinámicas según el largo de la lista */}
+      <CredentialDrawer
+        open={drawerOpen}
+        editingId={editingId}
+        formData={formData}
+        onFormChange={setFormData}
+        onClose={closeDrawer}
+        onSave={handleSave}
+        onDelete={handleDelete}
+      />
+
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <StatCard title="TOTAL CONNECTIONS" value={credentials.length} icon="key" />
         <StatCard title="HEALTHY" value={credentials.length} icon="check_circle" color="text-green-500" />
@@ -228,10 +148,11 @@ const openEditModal = (conn: any) => {
         <StatCard title="MARKETS COVERED" value="--" icon="public" />
       </div>
 
-      {/* Search and Filters */}
       <div className="flex flex-col gap-2 sm:flex-row sm:gap-4 sm:items-center bg-white p-2 rounded-full border border-gray-100 shadow-sm">
         <div className="relative flex-1 min-w-0">
-          <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-gray-400">search</span>
+          <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-gray-400">
+            search
+          </span>
           <Input
             className="pl-12 border-none bg-transparent focus-visible:ring-0 shadow-none"
             placeholder="Search connections or markets..."
@@ -259,12 +180,11 @@ const openEditModal = (conn: any) => {
         </div>
       </div>
 
-      {/* Credentials Table */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <Table>
           <TableHeader className="bg-gray-50/50">
             <TableRow>
-              <TableHead className="font-bold text-[11px] text-gray-500 uppercase">Connection Name</TableHead>
+              <TableHead className="font-bold text-[11px] text-gray-500 uppercase">Connection</TableHead>
               <TableHead className="font-bold text-[11px] text-gray-500 uppercase">Platform</TableHead>
               <TableHead className="font-bold text-[11px] text-gray-500 uppercase">Market</TableHead>
               <TableHead className="font-bold text-[11px] text-gray-500 uppercase">Brand</TableHead>
@@ -286,13 +206,16 @@ const openEditModal = (conn: any) => {
               filteredCredentials.map((conn) => (
                 <TableRow key={conn.id}>
                   <TableCell>
-                    <div className="font-medium text-gray-900">{conn.name}</div>
-                    <div className="text-[11px] text-gray-400 font-mono">{conn.id}</div>
+                    <div className="flex items-center gap-3">
+                      <PlatformLogo platform={conn.platform} size="md" />
+                      <div>
+                        <div className="font-medium text-gray-900">{conn.name}</div>
+                        <div className="text-[11px] text-gray-400 font-mono">{conn.id}</div>
+                      </div>
+                    </div>
                   </TableCell>
-                  <TableCell>
-                    <Badge variant="secondary" className="bg-gray-100 text-gray-600 border-none font-bold uppercase">
-                      {conn.platform}
-                    </Badge>
+                  <TableCell className="text-sm font-medium text-gray-700">
+                    {getCredentialPlatformLabel(conn.platform)}
                   </TableCell>
                   <TableCell className="text-gray-600 font-medium">{conn.market}</TableCell>
                   <TableCell className="text-gray-600 font-medium">{conn.brand}</TableCell>
@@ -321,7 +244,7 @@ const openEditModal = (conn: any) => {
                         variant="ghost"
                         size="sm"
                         className="text-gray-400"
-                        onClick={() => openEditModal(conn)}
+                        onClick={() => openEditDrawer(conn)}
                       >
                         <span className="material-symbols-outlined">edit</span>
                       </Button>
@@ -346,7 +269,17 @@ const openEditModal = (conn: any) => {
   )
 }
 
-function StatCard({ title, value, icon, color = "text-gray-400" }: any) {
+function StatCard({
+  title,
+  value,
+  icon,
+  color = "text-gray-400",
+}: {
+  title: string
+  value: string | number
+  icon: string
+  color?: string
+}) {
   return (
     <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex justify-between items-start">
       <div>

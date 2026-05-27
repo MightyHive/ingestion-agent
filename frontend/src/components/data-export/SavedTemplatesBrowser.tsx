@@ -32,7 +32,7 @@ export default function SavedTemplatesBrowser({ mode, selectedId, onSelect }: Pr
       <div className="flex flex-col items-center justify-center py-16 gap-3 text-on-surface-variant">
         <span className="material-symbols-outlined text-4xl">folder_open</span>
         <p className="text-sm">No saved templates yet.</p>
-        <p className="text-xs">Complete a Data Connection flow and save a template first.</p>
+        <p className="text-xs">Complete a Data Exploration flow and save a template first.</p>
       </div>
     )
   }

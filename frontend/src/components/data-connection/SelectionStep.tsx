@@ -98,7 +98,7 @@ export default function SelectionStep({ data, onUpdate }: { data: Step2Data; onU
   return (
     <div className="space-y-6 max-w-[1200px]">
       <div>
-        <h1 className="text-2xl font-semibold text-on-surface">Field selection</h1>
+        <h2 className="text-2xl font-semibold text-on-surface">Field selection</h2>
         <p className="text-sm text-on-surface-variant mt-0.5">
           {connectorName
             ? `Select fields to extract from ${displayPlatform}.`

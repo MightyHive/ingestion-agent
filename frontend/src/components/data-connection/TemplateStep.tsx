@@ -105,7 +105,7 @@ export default function TemplateStep({data, onUpdate}: any) {
   return (
     <div className="space-y-6 max-w-[1200px]">
       <div>
-        <h1 className="text-2xl font-semibold text-on-surface">Template</h1>
+        <h2 className="text-2xl font-semibold text-on-surface">Template</h2>
         <p className="text-sm text-on-surface-variant mt-0.5">
           The Data Architect proposes the following structure for your data.
         </p>
@@ -264,7 +264,7 @@ export default function TemplateStep({data, onUpdate}: any) {
                   className="w-full py-2.5 px-4 bg-primary text-white rounded-xl font-semibold text-sm hover:bg-primary/90 transition-colors flex items-center justify-center gap-2"
                 >
                   <span className="material-symbols-outlined text-base">upload</span>
-                  Go to Data Export
+                  Go to Export Monitoring
                 </button>
               </div>
             ) : (
