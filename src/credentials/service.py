@@ -18,6 +18,7 @@ from credentials.secrets import (
     build_secret_id,
     check_secret_exists,
     get_connection_secret,
+    list_sm_secrets_for_tenant,
     revoke_connection_secret,
     rotate_connection_secret,
     store_connection_secret,
@@ -106,9 +107,9 @@ def list_connections(
         repo = ConnectionRepository(session)
         records = repo.list_by_tenant(tenant_id=tenant_id, status=status)
 
-    # Lazy health check: verify each active connection's secret still exists in SM.
-    # If not found → delete the DB record so stale entries don't linger.
+    # --- Lazy health check (BD → SM): delete DB records whose SM secret is gone ---
     result = []
+    known_secret_ids: set[str] = set()
     for record in records:
         if record.status == ConnectionStatus.ACTIVE:
             try:
@@ -127,7 +128,46 @@ def list_connections(
                     except Exception:  # noqa: BLE001 — already gone, ignore
                         pass
                 continue
+        known_secret_ids.add(record.secret_id)
         result.append(record)
+
+    # --- Reverse sync (SM → BD): auto-import secrets that exist in SM but not in DB ---
+    # Only runs when listing active/all connections (not when filtering by inactive/revoked).
+    if status is None or status == ConnectionStatus.ACTIVE:
+        try:
+            sm_secret_ids = list_sm_secrets_for_tenant(tenant_id)
+        except Exception:  # noqa: BLE001 — SM unavailable, skip reverse sync
+            sm_secret_ids = []
+
+        for secret_id in sm_secret_ids:
+            if secret_id in known_secret_ids:
+                continue
+            # Parse secret_id: {tenant}-{provider}-{connection_id}
+            # Strip the tenant prefix, then split at the first hyphen for provider.
+            tenant_prefix = secret_id.split("-")[0] + "-"
+            remainder = secret_id[len(tenant_prefix):]  # e.g. "meta-test-ivan-e2e"
+            parts = remainder.split("-", 1)
+            if len(parts) < 2:
+                continue
+            provider, connection_id = parts[0], parts[1]
+            with get_session() as session:
+                repo = ConnectionRepository(session)
+                try:
+                    new_record = repo.create_with_connection_id(
+                        connection_id=connection_id,
+                        data=ConnectionCreate(
+                            tenant_id=tenant_id,
+                            provider=provider,
+                            secret_id=secret_id,
+                            name=None,
+                            status=ConnectionStatus.ACTIVE,
+                        ),
+                    )
+                    result.append(new_record)
+                    known_secret_ids.add(secret_id)
+                except Exception:  # noqa: BLE001 — duplicate or constraint error, skip
+                    pass
+
     return result
 
 

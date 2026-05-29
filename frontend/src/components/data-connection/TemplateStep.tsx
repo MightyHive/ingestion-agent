@@ -66,19 +66,23 @@ export default function TemplateStep({
    */
   const [targetTableDirty, setTargetTableDirty] = useState(false)
 
-  // Load active connections for this tenant, filtered by platform
+  // Load active connections for this tenant, filtered by platform.
+  // Prefer manifest?.platform ("meta") over data.step1.platform which
+  // is the connector id ("meta_facebook_ad_insights") and won't match.
+  const manifestPlatform = manifest?.platform ?? null
   useEffect(() => {
     if (!selectedTenantId) return
     fetchCredentials(selectedTenantId)
       .then((all) => {
         const active = all.filter((c) => c.status === "active")
-        const filtered = platform
-          ? active.filter((c) => c.provider.toLowerCase() === platform.toLowerCase())
+        const filterKey = manifestPlatform ?? platform
+        const filtered = filterKey
+          ? active.filter((c) => c.provider.toLowerCase() === filterKey.toLowerCase())
           : active
         setConnections(filtered)
       })
       .catch(() => setConnections([]))
-  }, [selectedTenantId, platform])
+  }, [selectedTenantId, manifestPlatform, platform])
 
   const columnsKey = useMemo(() => [...columns].sort().join("|"), [columns])
   const loading = isProposing

@@ -42,6 +42,10 @@ class SecretsBackend(ABC):
     def secret_exists(self, secret_id: str) -> bool:
         """Return True if the secret exists and has an accessible latest version."""
 
+    @abstractmethod
+    def list_secret_ids(self, prefix: str) -> list[str]:
+        """Return all secret IDs whose name starts with *prefix*."""
+
 
 class LocalSecretsBackend(SecretsBackend):
     """File-based secrets backend for local development.
@@ -111,6 +115,10 @@ class LocalSecretsBackend(SecretsBackend):
             return False
         return not entry.get("disabled", False)
 
+    def list_secret_ids(self, prefix: str) -> list[str]:
+        data = self._load()
+        return [sid for sid in data.keys() if sid.startswith(prefix)]
+
 
 class GcpCliSecretsBackend(SecretsBackend):
     """GCP Secret Manager backend via gcloud CLI.
@@ -173,11 +181,36 @@ class GcpCliSecretsBackend(SecretsBackend):
 
     def secret_exists(self, secret_id: str) -> bool:
         check = subprocess.run(
-            ["gcloud", "secrets", "versions", "access", "latest",
-             f"--secret={secret_id}", f"--project={self._project}"],
+            ["gcloud", "secrets", "describe", secret_id, f"--project={self._project}"],
             capture_output=True, text=True,
         )
-        return check.returncode == 0
+        if check.returncode == 0:
+            return True
+        # Only treat as non-existent on an explicit NOT_FOUND response.
+        # Any other failure (PERMISSION_DENIED, network error, etc.)
+        # returns True so the health check never deletes a record it
+        # cannot confidently confirm is gone.
+        err = check.stderr
+        return not ("NOT_FOUND" in err or "not found" in err.lower())
+
+    def list_secret_ids(self, prefix: str) -> list[str]:
+        check = subprocess.run(
+            [
+                "gcloud", "secrets", "list",
+                f"--project={self._project}",
+                "--format=value(name)",
+            ],
+            capture_output=True, text=True,
+        )
+        if check.returncode != 0:
+            return []
+        ids = []
+        for line in check.stdout.splitlines():
+            # Full resource name: projects/PROJECT/secrets/SECRET_ID
+            secret_id = line.strip().split("/")[-1]
+            if secret_id.startswith(prefix):
+                ids.append(secret_id)
+        return ids
 
 
 class GcpSecretsBackend(SecretsBackend):
@@ -291,4 +324,22 @@ class GcpSecretsBackend(SecretsBackend):
         except NotFound:
             return False
         except GoogleAPICallError:
-            return False
+            return True  # Unknown error → assume intact
+
+    def list_secret_ids(self, prefix: str) -> list[str]:
+        try:
+            from google.api_core.exceptions import GoogleAPICallError
+        except ImportError:
+            return []
+        client = self._get_client()
+        parent = f"projects/{self._project_id}"
+        try:
+            ids = []
+            for secret in client.list_secrets(request={"parent": parent}):
+                # Full name: projects/PROJECT/secrets/SECRET_ID
+                secret_id = secret.name.split("/")[-1]
+                if secret_id.startswith(prefix):
+                    ids.append(secret_id)
+            return ids
+        except GoogleAPICallError:
+            return []

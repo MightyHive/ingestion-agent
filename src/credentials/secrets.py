@@ -96,6 +96,13 @@ def get_connection_secret(
     return _decode_payload_to_dict(payload_bytes)
 
 
+def list_sm_secrets_for_tenant(tenant_id: str) -> list[str]:
+    """Return all secret IDs in SM whose name starts with the sanitized tenant prefix."""
+    prefix = _sanitize_segment(tenant_id) + "-"
+    backend = _get_secrets_backend()
+    return backend.list_secret_ids(prefix)
+
+
 def check_secret_exists(tenant_id: str, provider: str, connection_id: str) -> bool:
     secret_id = build_secret_id(tenant_id=tenant_id, provider=provider, connection_id=connection_id)
     backend = _get_secrets_backend()
