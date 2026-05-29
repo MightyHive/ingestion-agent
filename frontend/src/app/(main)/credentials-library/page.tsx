@@ -7,9 +7,12 @@ import { Button } from "@/components/ui/button"
 import CredentialDrawer, { type CredentialFormData } from "@/components/credentials/CredentialDrawer"
 import PlatformLogo from "@/components/platforms/PlatformLogo"
 import { generateCredentialId } from "@/lib/generateCredentialId"
+import { isHealthyConnectionStatus } from "@/lib/dashboard-utils"
 import { getCredentialPlatformLabel } from "@/lib/platforms/credential-platforms"
 import { cn } from "@/lib/utils"
+import { appendConnectionLog } from "@/lib/stores/connectionHealthLogStore"
 import { useCredentialStore } from "@/lib/stores/credentialStore"
+import { validateCredentialFromStore } from "@/lib/validateConnection"
 
 type CredentialPlatformFilter = "all" | "META" | "TIKTOK" | "YOUTUBE" | "CM360" | "DV360" | "GOOGLE_ADS"
 
@@ -76,11 +79,14 @@ export default function CredentialsPage() {
   const closeDrawer = () => setDrawerOpen(false)
 
   const handleSave = () => {
+    const expiresAt = new Date()
+    expiresAt.setDate(expiresAt.getDate() + 30)
     const entry = {
       ...formData,
       id: editingId || generateCredentialId(formData.platform, formData.brand, formData.market),
       status: "Healthy",
       owner: "You (Admin)",
+      tokenExpiresAt: expiresAt.toISOString(),
     }
     if (editingId) {
       updateCredential(editingId, entry)
@@ -97,18 +103,27 @@ export default function CredentialsPage() {
     }
   }
 
-  const handleTest = (id: string) => {
+  const handleTest = async (id: string) => {
     const currentCred = credentials.find((c) => c.id === id)
-    if (!currentCred) return
+    if (!currentCred || currentCred.status === "Testing...") return
 
     updateCredential(id, { ...currentCred, status: "Testing..." })
 
-    setTimeout(() => {
-      const updatedCred = credentials.find((c) => c.id === id)
-      if (updatedCred) {
-        updateCredential(id, { ...updatedCred, status: "Healthy" })
-      }
-    }, 2000)
+    const result = await validateCredentialFromStore(currentCred)
+
+    appendConnectionLog({
+      sourceType: "credential",
+      sourceId: id,
+      sourceName: currentCred.name,
+      platform: currentCred.platform,
+      status: result.ok ? "success" : "failure",
+      message: result.message,
+    })
+
+    updateCredential(id, {
+      ...currentCred,
+      status: result.ok ? "Healthy" : "Action Needed",
+    })
   }
 
   return (
@@ -143,9 +158,19 @@ export default function CredentialsPage() {
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <StatCard title="TOTAL CONNECTIONS" value={credentials.length} icon="key" />
-        <StatCard title="HEALTHY" value={credentials.length} icon="check_circle" color="text-green-500" />
-        <StatCard title="ACTION NEEDED" value="0" icon="warning" color="text-orange-500" />
-        <StatCard title="MARKETS COVERED" value="--" icon="public" />
+        <StatCard
+          title="HEALTHY"
+          value={credentials.filter((c) => isHealthyConnectionStatus(c.status)).length}
+          icon="check_circle"
+          color="text-green-500"
+        />
+        <StatCard
+          title="ACTION NEEDED"
+          value={credentials.filter((c) => !isHealthyConnectionStatus(c.status)).length}
+          icon="warning"
+          color="text-orange-500"
+        />
+        <StatCard title="MARKETS COVERED" value={new Set(credentials.map((c) => c.market)).size || "--"} icon="public" />
       </div>
 
       <div className="flex flex-col gap-2 sm:flex-row sm:gap-4 sm:items-center bg-white p-2 rounded-full border border-gray-100 shadow-sm">

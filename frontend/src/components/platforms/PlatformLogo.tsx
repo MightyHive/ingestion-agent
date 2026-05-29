@@ -1,3 +1,4 @@
+import Image from "next/image"
 import { getCredentialPlatform } from "@/lib/platforms/credential-platforms"
 import { cn } from "@/lib/utils"
 
@@ -8,6 +9,13 @@ const sizeClasses = {
   xl: "h-20 w-20 text-2xl rounded-2xl",
 }
 
+const imageSizes = {
+  sm: 32,
+  md: 40,
+  lg: 56,
+  xl: 80,
+}
+
 interface PlatformLogoProps {
   platform: string
   size?: keyof typeof sizeClasses
@@ -16,6 +24,27 @@ interface PlatformLogoProps {
 
 export default function PlatformLogo({ platform, size = "md", className }: PlatformLogoProps) {
   const config = getCredentialPlatform(platform)
+
+  if (config.logoSrc) {
+    return (
+      <div
+        className={cn(
+          "relative flex shrink-0 items-center justify-center overflow-hidden bg-white shadow-sm",
+          sizeClasses[size],
+          className
+        )}
+        title={config.label}
+      >
+        <Image
+          src={config.logoSrc}
+          alt={config.label}
+          width={imageSizes[size]}
+          height={imageSizes[size]}
+          className="object-contain p-1"
+        />
+      </div>
+    )
+  }
 
   return (
     <div

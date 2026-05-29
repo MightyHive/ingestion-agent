@@ -11,15 +11,16 @@ export interface CredentialPlatformConfig {
   label: string
   color: string
   initial: string
+  logoSrc?: string
 }
 
 export const CREDENTIAL_PLATFORMS: CredentialPlatformConfig[] = [
-  { id: "META", label: "Meta", color: "#1877F2", initial: "M" },
-  { id: "TIKTOK", label: "TikTok", color: "#010101", initial: "T" },
-  { id: "YOUTUBE", label: "YouTube", color: "#FF0000", initial: "Y" },
+  { id: "META", label: "Meta", color: "#1877F2", initial: "M", logoSrc: "/logo-meta.svg" },
+  { id: "TIKTOK", label: "TikTok", color: "#010101", initial: "T", logoSrc: "/logo-tiktok.svg" },
+  { id: "YOUTUBE", label: "YouTube", color: "#FF0000", initial: "Y", logoSrc: "/logo-youtube.svg" },
   { id: "CM360", label: "CM360", color: "#4285F4", initial: "C" },
   { id: "DV360", label: "DV360", color: "#34A853", initial: "D" },
-  { id: "GOOGLE_ADS", label: "Google Ads", color: "#FBBC04", initial: "G" },
+  { id: "GOOGLE_ADS", label: "Google Ads", color: "#FBBC04", initial: "G", logoSrc: "/logo-google-ads.svg" },
 ]
 
 export const TOKEN_DOC_URLS: Record<CredentialPlatformId, string> = {

@@ -11,6 +11,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import DestinationLogo from "@/components/platforms/DestinationLogo"
 import type { SavedDestination } from "@/lib/stores/destinationStore"
 
 export type DestinationsSelectData = {
@@ -53,9 +54,7 @@ function ConnectionsTable({
           <TableRow key={project.id}>
             <TableCell>
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-[#4285F4] flex items-center justify-center flex-shrink-0">
-                  <span className="material-symbols-outlined text-white text-sm">cloud</span>
-                </div>
+                <DestinationLogo size="sm" />
                 <span className="text-sm font-medium text-on-surface">{project.name}</span>
               </div>
             </TableCell>
@@ -132,9 +131,7 @@ export default function DestinationsStep(props: DestinationsStepProps) {
             >
               <div className="flex items-start justify-between">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-[#4285F4] flex items-center justify-center flex-shrink-0">
-                    <span className="material-symbols-outlined text-white text-base">cloud</span>
-                  </div>
+                  <DestinationLogo size="md" />
                   <div>
                     <p className="text-sm font-semibold text-on-surface">{project.name}</p>
                     <p className="text-xs text-on-surface-variant font-mono">{project.projectId}</p>

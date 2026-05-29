@@ -1,9 +1,6 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
-import Header from "@/components/layout/Header";
-import MainContent from "@/components/layout/MainContent";
-import Sidebar from "@/components/layout/Sidebar";
 
 const inter = Inter({
   variable: "--font-inter",
@@ -29,15 +26,7 @@ export default function RootLayout({
       <head>
       <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
       </head>
-      <body className="min-h-full">
-        <Header />
-        <div className="flex">
-          <Sidebar />
-          <main className="ml-64 mt-16 flex-1 p-8">
-            <MainContent>{children}</MainContent>
-          </main>
-        </div>
-      </body>
+      <body className="min-h-full">{children}</body>
     </html>
   );
 }

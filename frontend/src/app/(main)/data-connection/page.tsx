@@ -1,20 +1,29 @@
 "use client"
+
 import { useCallback, useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
 import ConnectionStep from "@/components/data-connection/ConnectionStep"
+import CredentialScopeStep from "@/components/data-connection/CredentialScopeStep"
+import ExplorationFunnel from "@/components/data-connection/ExplorationFunnel"
 import SelectionStep from "@/components/data-connection/SelectionStep"
 import TemplateStep from "@/components/data-connection/TemplateStep"
 import TemplatesLibraryPanel from "@/components/templates/TemplatesLibraryPanel"
+import OnboardingGuide from "@/components/dashboard/OnboardingGuide"
+
+const TOTAL_STEPS = 4
 
 export default function DataConnectionPage() {
   const [step, setStep] = useState(1)
   const [formData, setFormData] = useState({
     step1: { platform: "" },
     step2: {
-      columns: [] as string[],
+      credentialIds: [] as string[],
       reportingLevel: null as string | null,
     },
-    step3: { isSaved: false },
+    step3: {
+      columns: [] as string[],
+    },
+    step4: { isSaved: false },
   })
 
   const onStep1Update = useCallback((data: Record<string, unknown>) => {
@@ -29,27 +38,59 @@ export default function DataConnectionPage() {
     setFormData((prev) => ({ ...prev, step3: { ...prev.step3, ...data } }))
   }, [])
 
+  const onStep4Update = useCallback((data: Record<string, unknown>) => {
+    setFormData((prev) => ({ ...prev, step4: { ...prev.step4, ...data } }))
+  }, [])
+
+  const step1Completed = Boolean(formData.step1.platform)
+  const step2Completed =
+    formData.step2.credentialIds.length > 0 && formData.step2.reportingLevel !== null
+  const step3Completed = formData.step3.columns.length > 0
+
+  const FUNNEL_STEPS = [
+    { n: 1, label: "Select Connector", canEnter: true },
+    { n: 2, label: "Credentials & Scope", canEnter: step1Completed },
+    { n: 3, label: "Fields & Explore", canEnter: step1Completed && step2Completed },
+    { n: 4, label: "Save Template", canEnter: step1Completed && step2Completed && step3Completed },
+  ]
+
   const renderStep = () => {
     switch (step) {
       case 1:
-        return (
-          <ConnectionStep
-            data={formData.step1}
-            onUpdate={onStep1Update}
-          />
-        )
+        return <ConnectionStep data={formData.step1} onUpdate={onStep1Update} />
       case 2:
         return (
-          <SelectionStep
+          <CredentialScopeStep
             data={formData.step2}
             onUpdate={onStep2Update}
+            fieldCount={formData.step3.columns.length}
           />
         )
       case 3:
         return (
-          <TemplateStep
-            data={formData}
+          <SelectionStep
+            data={{
+              columns: formData.step3.columns,
+              reportingLevel: formData.step2.reportingLevel,
+              credentialIds: formData.step2.credentialIds,
+            }}
             onUpdate={onStep3Update}
+          />
+        )
+      case 4:
+        return (
+          <TemplateStep
+            data={{
+              step1: formData.step1,
+              step2: {
+                columns: formData.step3.columns,
+                reportingLevel: formData.step2.reportingLevel,
+                credentialIds: formData.step2.credentialIds,
+              },
+              step3: formData.step4,
+            }}
+            onUpdate={onStep4Update}
+            onGoToStep={setStep}
           />
         )
       default:
@@ -57,16 +98,10 @@ export default function DataConnectionPage() {
     }
   }
 
-  const progressPercent = (step / 3) * 100
-
-  const step2Completed =
-    formData.step2.columns.length > 0 && formData.step2.reportingLevel !== null
-
-  const STEPS = [
-    { n: 1, label: "Connection", canEnter: true },
-    { n: 2, label: "Selectors", canEnter: true },
-    { n: 3, label: "Template", canEnter: step2Completed },
-  ] as const
+  const canGoNext =
+    (step === 1 && step1Completed) ||
+    (step === 2 && step2Completed) ||
+    (step === 3 && step3Completed)
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -83,47 +118,18 @@ export default function DataConnectionPage() {
       <div>
         <h1 className="text-2xl font-bold">Data Exploration</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Connect platforms, select fields, and save extraction templates.
+          Connect platforms, choose credentials and scope, select fields, and save extraction templates.
         </p>
       </div>
 
-      <div className="flex gap-4 mb-8 items-center">
-        {STEPS.map(({ n, label, canEnter }) => (
-          <div
-            key={n}
-            onClick={() => canEnter && setStep(n)}
-            className={`p-2 text-sm transition-colors ${
-              canEnter ? "cursor-pointer hover:text-purple-600" : "cursor-not-allowed opacity-40"
-            } ${step === n ? "font-bold border-b-2 border-purple-500" : ""}`}
-          >
-            {label}
-          </div>
-        ))}
-        <div
-          role="progressbar"
-          className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden"
-        >
-          <div
-            className="h-full bg-[#5c27fe] transition-all duration-500 ease-out"
-            style={{ width: `${progressPercent}%` }}
-            aria-valuenow={step}
-            aria-valuemin={1}
-            aria-valuemax={3}
-          />
-        </div>
-      </div>
 
-      <div className="min-h-[400px] bg-white rounded-xl border p-6">
-        {renderStep()}
-      </div>
+      <ExplorationFunnel steps={FUNNEL_STEPS} currentStep={step} onStepClick={setStep} />
+
+      <div className="min-h-[400px] bg-white rounded-xl border p-6">{renderStep()}</div>
 
       <div
         className={`mt-8 flex ${
-          step > 1 && step < 3
-            ? "justify-between"
-            : step === 1
-              ? "justify-end"
-              : "justify-start"
+          step > 1 && step < TOTAL_STEPS ? "justify-between" : step === 1 ? "justify-end" : "justify-start"
         }`}
       >
         {step > 1 && (
@@ -131,19 +137,15 @@ export default function DataConnectionPage() {
             Back
           </Button>
         )}
-        {step < 3 && (
-          <Button
-            className="bg-[#5c27fe]"
-            onClick={() => setStep(step + 1)}
-            disabled={step === 2 && !step2Completed}
-          >
+        {step < TOTAL_STEPS && (
+          <Button className="bg-[#5c27fe]" onClick={() => setStep(step + 1)} disabled={!canGoNext}>
             Next
           </Button>
         )}
       </div>
 
       {step === 1 && (
-        <section className="rounded-xl border border-border bg-slate-50/50 p-6">
+        <section id="templates" className="rounded-xl border border-border bg-slate-50/50 p-6">
           <TemplatesLibraryPanel />
         </section>
       )}

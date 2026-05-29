@@ -20,11 +20,26 @@ function typeColor(type: string): string {
   return "bg-muted text-on-surface-variant"
 }
 
-export default function TemplateStep({data, onUpdate}: any) {
-  const platform       = data.step1?.platform
-  const columns        = data.step2?.columns || []
+interface TemplateStepProps {
+  data: {
+    step1?: { platform?: string }
+    step2?: {
+      columns?: string[]
+      reportingLevel?: string | null
+      credentialIds?: string[]
+    }
+    step3?: { isSaved?: boolean }
+  }
+  onUpdate: (d: Record<string, unknown>) => void
+  onGoToStep?: (step: number) => void
+}
+
+export default function TemplateStep({ data, onUpdate, onGoToStep }: TemplateStepProps) {
+  const platform = data.step1?.platform
+  const columns = data.step2?.columns || []
   const reportingLevel = data.step2?.reportingLevel ?? null
-  const router         = useRouter()
+  const credentialIds = data.step2?.credentialIds ?? []
+  const router = useRouter()
   const store          = useConnectorStore()
   const { addTemplate } = useTemplateStore()
   const {
@@ -74,10 +89,11 @@ export default function TemplateStep({data, onUpdate}: any) {
       })
       addTemplate({
         tableName: name,
-        platform:  platform ?? "",
-        endpoint:  reportingLevel ?? "all",
-        columns:   templateProposal.columns,
+        platform: platform ?? "",
+        endpoint: reportingLevel ?? "all",
+        columns: templateProposal.columns,
         ddl,
+        credentialIds: credentialIds.length > 0 ? credentialIds : undefined,
       })
     }
     setSaved(true)
@@ -95,8 +111,12 @@ export default function TemplateStep({data, onUpdate}: any) {
       <div className="flex flex-col items-center justify-center gap-4 py-20">
         <span className="material-symbols-outlined text-4xl text-on-surface-variant">template</span>
         <p className="text-sm text-on-surface-variant">There is no template generated.</p>
-        <button onClick={() => router.push("/selectors")} className="text-sm font-semibold text-primary hover:underline">
-          Go to Selectors
+        <button
+          type="button"
+          onClick={() => onGoToStep?.(3)}
+          className="text-sm font-semibold text-primary hover:underline"
+        >
+          Go to field selection
         </button>
       </div>
     )
@@ -128,8 +148,12 @@ export default function TemplateStep({data, onUpdate}: any) {
             <p className="font-semibold text-sm">Error while generating the template</p>
             <p className="text-xs mt-0.5">{proposalError}</p>
           </div>
-          <button onClick={() => router.push("/selectors")} className="ml-auto text-xs font-semibold text-primary hover:underline">
-            Go to Selectors
+          <button
+            type="button"
+            onClick={() => onGoToStep?.(3)}
+            className="ml-auto text-xs font-semibold text-primary hover:underline"
+          >
+            Go to field selection
           </button>
         </div>
       )}

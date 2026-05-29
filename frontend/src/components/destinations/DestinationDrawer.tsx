@@ -3,38 +3,33 @@
 import { useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import PlatformLogo from "@/components/platforms/PlatformLogo"
-import { generateCredentialId } from "@/lib/generateCredentialId"
-import {
-  CREDENTIAL_PLATFORMS,
-  TOKEN_DOC_URLS,
-  type CredentialPlatformId,
-} from "@/lib/platforms/credential-platforms"
+import DestinationLogo from "@/components/platforms/DestinationLogo"
 import { appendConnectionLog } from "@/lib/stores/connectionHealthLogStore"
-import { validateCredentialConnection } from "@/lib/validateConnection"
+import type { DestinationLoadTarget } from "@/lib/stores/destinationStore"
+import { validateDestinationConnection } from "@/lib/validateConnection"
 import { cn } from "@/lib/utils"
 
-export interface CredentialFormData {
+export interface DestinationFormData {
   name: string
-  platform: CredentialPlatformId
-  market: string
-  brand: string
-  token: string
+  projectId: string
+  region: string
+  serviceAccount: string
+  loadTarget: DestinationLoadTarget
 }
 
 type TestStatus = "idle" | "testing" | "success" | "error"
 
-interface CredentialDrawerProps {
+interface DestinationDrawerProps {
   open: boolean
   editingId: string | null
-  formData: CredentialFormData
-  onFormChange: (data: CredentialFormData) => void
+  formData: DestinationFormData
+  onFormChange: (data: DestinationFormData) => void
   onClose: () => void
   onSave: () => void
   onDelete?: (id: string) => void
 }
 
-export default function CredentialDrawer({
+export default function DestinationDrawer({
   open,
   editingId,
   formData,
@@ -42,7 +37,7 @@ export default function CredentialDrawer({
   onClose,
   onSave,
   onDelete,
-}: CredentialDrawerProps) {
+}: DestinationDrawerProps) {
   const [testStatus, setTestStatus] = useState<TestStatus>("idle")
   const [testMessage, setTestMessage] = useState("")
 
@@ -55,7 +50,7 @@ export default function CredentialDrawer({
   useEffect(() => {
     setTestStatus("idle")
     setTestMessage("")
-  }, [formData.platform, formData.token, formData.market, formData.brand, formData.name])
+  }, [formData.name, formData.projectId, formData.region, formData.serviceAccount, formData.loadTarget])
 
   useEffect(() => {
     if (!open) return
@@ -69,32 +64,21 @@ export default function CredentialDrawer({
   const handleTest = async () => {
     setTestStatus("testing")
     setTestMessage("")
-    const result = await validateCredentialConnection(formData)
+    const result = await validateDestinationConnection(formData)
     setTestStatus(result.ok ? "success" : "error")
     setTestMessage(result.message)
 
-    const sourceId =
-      editingId ||
-      (formData.brand && formData.market
-        ? generateCredentialId(formData.platform, formData.brand, formData.market)
-        : "pending")
-
     appendConnectionLog({
-      sourceType: "credential",
-      sourceId,
-      sourceName: formData.name.trim() || "New credential",
-      platform: formData.platform,
+      sourceType: "destination",
+      sourceId: editingId || formData.projectId.trim() || "pending",
+      sourceName: formData.name.trim() || "New destination",
+      platform: "GCP",
       status: result.ok ? "success" : "failure",
       message: result.message,
     })
   }
 
   const canSave = testStatus === "success"
-
-  const idPreview =
-    formData.brand && formData.market
-      ? generateCredentialId(formData.platform, formData.brand, formData.market)
-      : null
 
   if (!open) return null
 
@@ -110,22 +94,22 @@ export default function CredentialDrawer({
       <aside
         role="dialog"
         aria-modal
-        aria-labelledby="credential-drawer-title"
+        aria-labelledby="destination-drawer-title"
         className="fixed right-0 top-16 z-50 flex h-[calc(100vh-4rem)] w-full max-w-md flex-col border-l border-border bg-white shadow-2xl"
       >
         <div className="flex items-start gap-4 border-b border-border px-6 py-5">
-          <PlatformLogo platform={formData.platform} size="xl" />
+          <DestinationLogo size="xl" />
           <div className="min-w-0 flex-1">
             <p className="text-xs font-semibold uppercase tracking-wider text-primary">
-              {editingId ? "Edit credential" : "New credential"}
+              {editingId ? "Edit destination" : "New destination"}
             </p>
-            <h2 id="credential-drawer-title" className="mt-1 text-xl font-bold text-on-surface">
-              {CREDENTIAL_PLATFORMS.find((p) => p.id === formData.platform)?.label ?? "Platform"}
+            <h2 id="destination-drawer-title" className="mt-1 text-xl font-bold text-on-surface">
+              Google Cloud Platform
             </h2>
             <p className="mt-1 text-sm text-muted-foreground">
               {editingId
                 ? "Update fields and test again before saving."
-                : "Configure authentication for a platform and market."}
+                : "Register a GCP project as a data destination."}
             </p>
           </div>
           <button
@@ -140,79 +124,64 @@ export default function CredentialDrawer({
 
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
           <div className="space-y-2">
-            <label className="text-[10px] font-bold text-gray-500 uppercase">Connection name</label>
+            <label className="text-[10px] font-bold text-gray-500 uppercase">Project name</label>
             <Input
-              placeholder="e.g. Meta France Cadillac"
+              placeholder="e.g. MDS Production"
               value={formData.name}
               onChange={(e) => onFormChange({ ...formData, name: e.target.value })}
             />
           </div>
 
           <div className="space-y-2">
-            <label className="text-[10px] font-bold text-gray-500 uppercase">Platform</label>
-            <div className="grid grid-cols-3 gap-2">
-              {CREDENTIAL_PLATFORMS.map((p) => (
+            <label className="text-[10px] font-bold text-gray-500 uppercase">Project ID</label>
+            <Input
+              className="font-mono text-sm"
+              placeholder="e.g. mds-prod-421"
+              value={formData.projectId}
+              onChange={(e) => onFormChange({ ...formData, projectId: e.target.value })}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-gray-500 uppercase">Region</label>
+            <Input
+              className="font-mono text-sm"
+              placeholder="e.g. us-east1"
+              value={formData.region}
+              onChange={(e) => onFormChange({ ...formData, region: e.target.value })}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-gray-500 uppercase">Service account</label>
+            <Input
+              className="font-mono text-sm"
+              placeholder="name@project.iam.gserviceaccount.com"
+              value={formData.serviceAccount}
+              onChange={(e) => onFormChange({ ...formData, serviceAccount: e.target.value })}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-gray-500 uppercase">Load target</label>
+            <div className="flex gap-2">
+              {(["BigQuery", "GCS"] as const).map((target) => (
                 <button
-                  key={p.id}
+                  key={target}
                   type="button"
-                  onClick={() => onFormChange({ ...formData, platform: p.id })}
+                  onClick={() => onFormChange({ ...formData, loadTarget: target })}
                   className={cn(
-                    "flex flex-col items-center gap-1.5 rounded-xl border p-2 transition-all",
-                    formData.platform === p.id
+                    "flex-1 rounded-xl border px-3 py-2 text-sm font-semibold transition-all",
+                    formData.loadTarget === target
                       ? "border-primary bg-primary/5 ring-2 ring-primary/20"
                       : "border-border hover:border-primary/30"
                   )}
                 >
-                  <PlatformLogo platform={p.id} size="sm" />
-                  <span className="text-[10px] font-semibold text-on-surface">{p.label}</span>
+                  {target}
                 </button>
               ))}
             </div>
           </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className="text-[10px] font-bold text-gray-500 uppercase">Market</label>
-              <Input
-                placeholder="e.g. France"
-                value={formData.market}
-                onChange={(e) => onFormChange({ ...formData, market: e.target.value })}
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-[10px] font-bold text-gray-500 uppercase">Brand</label>
-              <Input
-                placeholder="e.g. Cadillac"
-                value={formData.brand}
-                onChange={(e) => onFormChange({ ...formData, brand: e.target.value })}
-              />
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-1">
-            <label className="text-[10px] font-bold text-gray-500 uppercase">Access token</label>
-            <Input
-              type="password"
-              placeholder="••••••••••••"
-              value={formData.token}
-              onChange={(e) => onFormChange({ ...formData, token: e.target.value })}
-            />
-            <a
-              href={TOKEN_DOC_URLS[formData.platform]}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs text-blue-500 hover:underline"
-            >
-              Need help? View documentation
-            </a>
-          </div>
-
-          {idPreview && (
-            <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-3">
-              <p className="text-[9px] font-bold uppercase text-slate-400 mb-1">Generated ID preview</p>
-              <code className="text-xs font-mono text-purple-600">{idPreview}</code>
-            </div>
-          )}
 
           {testMessage && (
             <div
@@ -253,11 +222,7 @@ export default function CredentialDrawer({
 
           <div className="flex gap-2">
             {editingId && onDelete && (
-              <Button
-                type="button"
-                variant="destructive"
-                onClick={() => onDelete(editingId)}
-              >
+              <Button type="button" variant="destructive" onClick={() => onDelete(editingId)}>
                 Delete
               </Button>
             )}
@@ -269,7 +234,6 @@ export default function CredentialDrawer({
               className="flex-1 bg-[#5c27fe] text-white hover:bg-[#4b1fd1]"
               onClick={onSave}
               disabled={!canSave}
-              title={!canSave ? "Test the connection successfully before saving" : undefined}
             >
               {editingId ? "Update" : "Save"}
             </Button>

@@ -10,6 +10,7 @@ export interface SavedTemplate {
   columns: TemplateColumn[]
   ddl: string
   savedAt: string
+  credentialIds?: string[]
 }
 
 interface TemplateStore {

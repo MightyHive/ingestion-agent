@@ -269,10 +269,10 @@ export interface OnboardingStep {
 }
 
 export const onboardingSteps: OnboardingStep[] = [
-  { id: "connector", label: "Connect an API", done: false, href: "/connectors" },
-  { id: "selector",  label: "Select fields", done: false, href: "/selectors" },
-  { id: "schema",    label: "Approve schema", done: false, href: "/schema" },
-  { id: "scheduler", label: "Configure sync", done: false, href: "/scheduler" },
+  { id: "connector", label: "Connect an API", done: false, href: "/credentials-library" },
+  { id: "selector", label: "Select fields", done: false, href: "/data-connection" },
+  { id: "schema", label: "Approve schema", done: false, href: "/data-connection" },
+  { id: "scheduler", label: "Configure sync", done: false, href: "/data-export" },
 ]
 
 // ── Conector health (sidebar del dash) ───────────────────────────────────────
@@ -307,8 +307,33 @@ export interface QuickAction {
 }
 
 export const quickActions: QuickAction[] = [
-  { id: "qa-1", label: "New connector", icon: "add_circle", href: "/connectors" },
-  { id: "qa-2", label: "View selectors", icon: "ads_click", href: "/selectors" },
-  { id: "qa-3", label: "Review schema", icon: "schema", href: "/schema" },
-  { id: "qa-4", label: "Scheduler", icon: "calendar_today", href: "/scheduler" },
+  { id: "qa-1", label: "New connector", icon: "add_circle", href: "/credentials-library" },
+  { id: "qa-2", label: "View selectors", icon: "ads_click", href: "/data-connection" },
+  { id: "qa-3", label: "Review schema", icon: "schema", href: "/data-connection" },
+  { id: "qa-4", label: "Scheduler", icon: "calendar_today", href: "/export-planner" },
+]
+
+// Fallback demo data when no export jobs exist yet
+export const demoFailedPipelines: Pipeline[] = [
+  {
+    id: "pl-fail-1",
+    name: "Meta Ads BR — Daily",
+    platform: "Meta Ads",
+    market: "BR",
+    status: "error",
+    lastSync: "2026-03-30T06:00:00Z",
+    successRate: 72,
+    tokenHealth: "expired",
+  },
+  {
+    id: "pl-fail-2",
+    name: "TikTok MX — Weekly",
+    platform: "TikTok Ads",
+    market: "MX",
+    status: "error",
+    lastSync: "2026-03-29T22:00:00Z",
+    successRate: 65,
+    tokenHealth: "expiring",
+    tokenDaysLeft: 5,
+  },
 ]
