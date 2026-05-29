@@ -21,6 +21,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import Link from "next/link"
+import PlatformLogo from "@/components/platforms/PlatformLogo"
 import { useTemplateStore, type SavedTemplate } from "@/lib/stores/templateStore"
 import { buildBigQueryCreateDdl } from "@/lib/bigquery-ddl"
 
@@ -265,12 +266,12 @@ export default function TemplatesLibraryPanel() {
                     <div className="text-[11px] text-gray-400 font-mono">{conn.id}</div>
                   </TableCell>
                   <TableCell>
-                    <Badge
-                      variant="secondary"
-                      className="bg-gray-100 text-gray-600 border-none font-bold uppercase"
-                    >
-                      {templatePlatformLabel(conn.platform)}
-                    </Badge>
+                    <div className="flex items-center gap-2">
+                      <PlatformLogo platform={conn.platform} size="sm" />
+                      <span className="text-xs font-semibold text-gray-600">
+                        {templatePlatformLabel(conn.platform)}
+                      </span>
+                    </div>
                   </TableCell>
                   <TableCell className="text-gray-600 font-medium">{conn.endpoint}</TableCell>
                   <TableCell className="text-right">

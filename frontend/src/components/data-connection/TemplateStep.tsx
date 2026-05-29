@@ -9,6 +9,8 @@ import { generateMockTemplate } from "@/lib/mock-agent"
 import { buildBigQueryCreateDdl } from "@/lib/bigquery-ddl"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import TemplateSchemaTable from "@/components/data-connection/TemplateSchemaTable"
+import PlatformLogo from "@/components/platforms/PlatformLogo"
 
 function typeColor(type: string): string {
   if (type.includes("FLOAT") || type === "NUMERIC" || type === "BIGNUMERIC")
@@ -26,7 +28,6 @@ interface TemplateStepProps {
     step2?: {
       columns?: string[]
       reportingLevel?: string | null
-      credentialIds?: string[]
     }
     step3?: { isSaved?: boolean }
   }
@@ -38,7 +39,7 @@ export default function TemplateStep({ data, onUpdate, onGoToStep }: TemplateSte
   const platform = data.step1?.platform
   const columns = data.step2?.columns || []
   const reportingLevel = data.step2?.reportingLevel ?? null
-  const credentialIds = data.step2?.credentialIds ?? []
+
   const router = useRouter()
   const store          = useConnectorStore()
   const { addTemplate } = useTemplateStore()
@@ -46,6 +47,7 @@ export default function TemplateStep({ data, onUpdate, onGoToStep }: TemplateSte
     templateProposal,
     isProposing,
     proposalError,
+    connectorId,
     connectorName,
     selectedFields,
     completedNodes,
@@ -93,7 +95,6 @@ export default function TemplateStep({ data, onUpdate, onGoToStep }: TemplateSte
         endpoint: reportingLevel ?? "all",
         columns: templateProposal.columns,
         ddl,
-        credentialIds: credentialIds.length > 0 ? credentialIds : undefined,
       })
     }
     setSaved(true)
@@ -113,7 +114,7 @@ export default function TemplateStep({ data, onUpdate, onGoToStep }: TemplateSte
         <p className="text-sm text-on-surface-variant">There is no template generated.</p>
         <button
           type="button"
-          onClick={() => onGoToStep?.(3)}
+          onClick={() => onGoToStep?.(2)}
           className="text-sm font-semibold text-primary hover:underline"
         >
           Go to field selection
@@ -150,7 +151,7 @@ export default function TemplateStep({ data, onUpdate, onGoToStep }: TemplateSte
           </div>
           <button
             type="button"
-            onClick={() => onGoToStep?.(3)}
+            onClick={() => onGoToStep?.(2)}
             className="ml-auto text-xs font-semibold text-primary hover:underline"
           >
             Go to field selection
@@ -185,41 +186,11 @@ export default function TemplateStep({ data, onUpdate, onGoToStep }: TemplateSte
                 </div>
               </div>
 
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-border">
-                      <th className="text-left py-2 px-2 text-xs font-semibold text-on-surface-variant uppercase tracking-wider w-24">Field</th>
-                      <th className="text-left py-2 px-2 text-xs font-semibold text-on-surface-variant uppercase tracking-wider w-24">Type</th>
-                      <th className="text-left py-2 px-2 text-xs font-semibold text-on-surface-variant uppercase tracking-wider w-24">Mode</th>
-                      <th className="text-left py-2 px-2 text-xs font-semibold text-on-surface-variant uppercase tracking-wider w-48">Description</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {templateProposal.columns.map((col) => (
-                      <tr
-                        key={col.original}
-                        className="border-b border-border/50 hover:bg-muted/30 transition-colors"
-                      >
-                        <td className="py-2 px-2 w-48">
-                          <code className="text-xs font-mono text-on-surface-variant">{col.name}</code>
-                        </td>
-                        <td className="py-2 px-2 w-24">
-                          <code className="text-xs font-mono text-on-surface-variant">{col.type}</code>
-                        </td>
-                        <td className="py-2 px-2 w-24">
-                          <code className="text-xs font-mono text-on-surface-variant">{col.mode}</code>
-                        </td>
-                        <td className="py-2 px-2">
-                          <span className="text-xs text-on-surface-variant">
-                            {col.description?.trim() ? col.description.trim() : "—"}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <TemplateSchemaTable
+                columns={templateProposal.columns}
+                showDescription
+                className="max-h-[480px]"
+              />
             </div>
 
             
@@ -229,7 +200,10 @@ export default function TemplateStep({ data, onUpdate, onGoToStep }: TemplateSte
             <div className="bg-card rounded-2xl border border-border p-5 flex flex-col gap-3">
               <div>
                 <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-1">Connector</p>
-                <p className="text-sm font-semibold text-on-surface">{connectorName}</p>
+                <div className="flex items-center gap-2">
+                  {connectorId && <PlatformLogo platform={connectorId} size="sm" />}
+                  <p className="text-sm font-semibold text-on-surface">{connectorName}</p>
+                </div>
               </div>
               <div>
                 <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-1">selected fields</p>

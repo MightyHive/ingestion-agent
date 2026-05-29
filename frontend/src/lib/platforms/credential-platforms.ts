@@ -32,8 +32,25 @@ export const TOKEN_DOC_URLS: Record<CredentialPlatformId, string> = {
   GOOGLE_ADS: "https://developers.google.com/google-ads/api/docs/get-started/make-first-call",
 }
 
+const CONNECTOR_ID_ALIASES: Record<string, CredentialPlatformId> = {
+  meta: "META",
+  tiktok: "TIKTOK",
+  youtube: "YOUTUBE",
+  google_ads: "GOOGLE_ADS",
+  dv360: "DV360",
+}
+
 export function getCredentialPlatform(id: string): CredentialPlatformConfig {
-  return CREDENTIAL_PLATFORMS.find((p) => p.id === id) ?? CREDENTIAL_PLATFORMS[0]
+  const direct = CREDENTIAL_PLATFORMS.find((p) => p.id === id.toUpperCase())
+  if (direct) return direct
+
+  const viaConnector = CONNECTOR_ID_ALIASES[id.toLowerCase()]
+  if (viaConnector) {
+    const match = CREDENTIAL_PLATFORMS.find((p) => p.id === viaConnector)
+    if (match) return match
+  }
+
+  return CREDENTIAL_PLATFORMS[0]
 }
 
 export function getCredentialPlatformLabel(id: string): string {

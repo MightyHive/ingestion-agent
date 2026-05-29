@@ -31,14 +31,13 @@ const helpByPath: Record<string, PageHelpContent> = {
   "/data-connection": {
     title: "Data Exploration",
     purpose:
-      "Define what to pull from each platform: choose a connector, credentials and reporting scope, select fields, then save a reusable extraction template.",
+      "Define what to pull from each platform: choose a connector, set the reporting scope and fields, then save a reusable extraction template.",
     steps: [
       "Step 1 — Select Connector: pick a platform connector to investigate available API fields.",
-      "Browse Templates library below (step 1 only) to preview, edit, or delete saved templates.",
-      "Step 2 — Credentials & Scope: choose credentials and the reporting level for your extract.",
-      "Step 3 — Fields & Explore: select dimensions and metrics valid for your scope.",
-      "Step 4 — Save Template: name the template and save it for use in Export Monitoring.",
-      "Use Next and Back to move through the funnel; completed templates appear in Export Scheduler.",
+      "Browse the Templates library below (step 1 only) to preview, edit, or delete saved templates.",
+      "Step 2 — Scope & Fields: choose the reporting level and select the dimensions and metrics to extract.",
+      "Step 3 — Save Template: review the preview, name the template, and save it for use in Export Monitoring.",
+      "Use Next and Back to move through the funnel; credentials are bound when configuring an export.",
     ],
   },
   "/destination-library": {

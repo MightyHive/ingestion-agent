@@ -4,13 +4,20 @@ import { useRouter } from "next/navigation"
 import { useState } from "react"
 import { useConnectorStore } from "@/lib/stores/connectorStore"
 import { getConnectorSessionId } from "@/lib/sessions"
-import { cn } from "@/lib/utils"
+import PlatformLogo from "@/components/platforms/PlatformLogo"
 
 const CONNECTORS = [
-  { id: "meta", name: "Meta Ads", description: "Facebook & Instagram campaigns, ad sets, creatives and performance metrics.", category: "Paid Media", apiVersion: "v18.0", color: "#1877F2", initial: "M" },
-  { id: "tiktok", name: "TikTok Ads", description: "TikTok For Business campaigns, ad groups, targeting parameters and KPIs.", category: "Paid Media", apiVersion: "v1.3", color: "#010101", initial: "T" },
-  { id: "youtube", name: "YouTube Ads", description: "Channel performance, video-level metrics, audience demographics and revenue.", category: "Paid Media", apiVersion: "v2", color: "#FF0000", initial: "Y" },
+  { id: "meta", name: "Meta Ads", description: "Facebook & Instagram campaigns, ad sets, creatives and performance metrics.", category: "Paid Media", apiVersion: "v18.0" },
+  { id: "tiktok", name: "TikTok Ads", description: "TikTok For Business campaigns, ad groups, targeting parameters and KPIs.", category: "Paid Media", apiVersion: "v1.3" },
+  { id: "youtube", name: "YouTube Ads", description: "Channel performance, video-level metrics, audience demographics and revenue.", category: "Paid Media", apiVersion: "v2" },
 ]
+
+const COMING_SOON = [
+  { id: "google_ads", name: "Google Ads" },
+  { id: "dv360", name: "DV360" },
+  { name: "LinkedIn Ads" },
+  { name: "Custom API" },
+] as const
 
 // Recibimos data y onUpdate como props
 export default function ConnectionStep({ data, onUpdate }: any) {
@@ -57,12 +64,7 @@ export default function ConnectionStep({ data, onUpdate }: any) {
           >
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-3">
-                <div 
-                  className="w-10 h-10 rounded-xl flex items-center justify-center text-white font-bold text-base flex-shrink-0" 
-                  style={{ backgroundColor: connector.color }}
-                >
-                  {connector.initial}
-                </div>
+                <PlatformLogo platform={connector.id} size="md" />
                 <div>
                   <p className="text-sm font-semibold text-on-surface">{connector.name}</p>
                   <p className="text-xs text-on-surface-variant">Official API {connector.apiVersion}</p>
@@ -90,9 +92,13 @@ export default function ConnectionStep({ data, onUpdate }: any) {
       <div className="border-t border-border pt-4">
         <p className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider mb-3">Coming soon</p>
         <div className="flex gap-2 flex-wrap">
-          {["Google Ads", "LinkedIn Ads", "DV360", "Custom API"].map((name) => (
-            <span key={name} className="text-xs px-3 py-1.5 rounded-lg border border-dashed border-border text-on-surface-variant">
-              {name}
+          {COMING_SOON.map((item) => (
+            <span
+              key={"id" in item ? item.id : item.name}
+              className="inline-flex items-center gap-2 text-xs px-3 py-1.5 rounded-lg border border-dashed border-border text-on-surface-variant"
+            >
+              {"id" in item && <PlatformLogo platform={item.id} size="sm" />}
+              {item.name}
             </span>
           ))}
         </div>

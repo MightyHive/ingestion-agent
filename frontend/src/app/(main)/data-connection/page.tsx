@@ -3,27 +3,22 @@
 import { useCallback, useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
 import ConnectionStep from "@/components/data-connection/ConnectionStep"
-import CredentialScopeStep from "@/components/data-connection/CredentialScopeStep"
 import ExplorationFunnel from "@/components/data-connection/ExplorationFunnel"
-import SelectionStep from "@/components/data-connection/SelectionStep"
+import ScopeFieldsStep from "@/components/data-connection/ScopeFieldsStep"
 import TemplateStep from "@/components/data-connection/TemplateStep"
 import TemplatesLibraryPanel from "@/components/templates/TemplatesLibraryPanel"
-import OnboardingGuide from "@/components/dashboard/OnboardingGuide"
 
-const TOTAL_STEPS = 4
+const TOTAL_STEPS = 3
 
 export default function DataConnectionPage() {
   const [step, setStep] = useState(1)
   const [formData, setFormData] = useState({
     step1: { platform: "" },
     step2: {
-      credentialIds: [] as string[],
       reportingLevel: null as string | null,
-    },
-    step3: {
       columns: [] as string[],
     },
-    step4: { isSaved: false },
+    step3: { isSaved: false },
   })
 
   const onStep1Update = useCallback((data: Record<string, unknown>) => {
@@ -38,20 +33,14 @@ export default function DataConnectionPage() {
     setFormData((prev) => ({ ...prev, step3: { ...prev.step3, ...data } }))
   }, [])
 
-  const onStep4Update = useCallback((data: Record<string, unknown>) => {
-    setFormData((prev) => ({ ...prev, step4: { ...prev.step4, ...data } }))
-  }, [])
-
   const step1Completed = Boolean(formData.step1.platform)
   const step2Completed =
-    formData.step2.credentialIds.length > 0 && formData.step2.reportingLevel !== null
-  const step3Completed = formData.step3.columns.length > 0
+    formData.step2.reportingLevel !== null && formData.step2.columns.length > 0
 
   const FUNNEL_STEPS = [
     { n: 1, label: "Select Connector", canEnter: true },
-    { n: 2, label: "Credentials & Scope", canEnter: step1Completed },
-    { n: 3, label: "Fields & Explore", canEnter: step1Completed && step2Completed },
-    { n: 4, label: "Save Template", canEnter: step1Completed && step2Completed && step3Completed },
+    { n: 2, label: "Scope & Fields", canEnter: step1Completed },
+    { n: 3, label: "Save Template", canEnter: step1Completed && step2Completed },
   ]
 
   const renderStep = () => {
@@ -60,36 +49,23 @@ export default function DataConnectionPage() {
         return <ConnectionStep data={formData.step1} onUpdate={onStep1Update} />
       case 2:
         return (
-          <CredentialScopeStep
+          <ScopeFieldsStep
             data={formData.step2}
             onUpdate={onStep2Update}
-            fieldCount={formData.step3.columns.length}
           />
         )
       case 3:
-        return (
-          <SelectionStep
-            data={{
-              columns: formData.step3.columns,
-              reportingLevel: formData.step2.reportingLevel,
-              credentialIds: formData.step2.credentialIds,
-            }}
-            onUpdate={onStep3Update}
-          />
-        )
-      case 4:
         return (
           <TemplateStep
             data={{
               step1: formData.step1,
               step2: {
-                columns: formData.step3.columns,
+                columns: formData.step2.columns,
                 reportingLevel: formData.step2.reportingLevel,
-                credentialIds: formData.step2.credentialIds,
               },
-              step3: formData.step4,
+              step3: formData.step3,
             }}
-            onUpdate={onStep4Update}
+            onUpdate={onStep3Update}
             onGoToStep={setStep}
           />
         )
@@ -100,8 +76,7 @@ export default function DataConnectionPage() {
 
   const canGoNext =
     (step === 1 && step1Completed) ||
-    (step === 2 && step2Completed) ||
-    (step === 3 && step3Completed)
+    (step === 2 && step2Completed)
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -118,10 +93,9 @@ export default function DataConnectionPage() {
       <div>
         <h1 className="text-2xl font-bold">Data Exploration</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Connect platforms, choose credentials and scope, select fields, and save extraction templates.
+          Connect platforms, choose reporting scope, select fields, and save extraction templates.
         </p>
       </div>
-
 
       <ExplorationFunnel steps={FUNNEL_STEPS} currentStep={step} onStepClick={setStep} />
 
